@@ -1,24 +1,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-if TYPE_CHECKING:
-    from ..main import SqlScript
+from ..models import ScriptReview
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ScriptReview:
-    script: SqlScript
-    review: str
-    attempts: int           # cuántos intentos necesitó (1 = aprobado al primer intento)
-    has_critical: bool
 
 
 class ReporterAgent:
@@ -61,7 +50,6 @@ class ReporterAgent:
         if not reviews:
             return "No hay reviews para consolidar."
 
-        # Construir el resumen de todos los reviews para el reportero
         reviews_text = ""
         for i, sr in enumerate(reviews, 1):
             label = f"[ROLLBACK] {sr.script.file.name}" if sr.script.is_rollback else sr.script.file.name

@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from ..skill_middleware import build_skills_header, load_skills_from_disk, make_load_skill_tool
-
-if TYPE_CHECKING:
-    from ..main import SqlScript
+from ..models import SqlScript
+from ..skill_middleware import load_skills_from_disk, make_load_skill_tool
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +18,11 @@ class ReviewerAgent:
 
     Modo actual: simple — inyecta todas las skills en el system prompt.
 
-    Migración a modo agente (progressive disclosure):
+    Migración a modo agente (progressive disclosure con LangGraph):
       1. Cambiar _build_system_prompt() para usar build_skills_header()
+         → solo muestra nombre + descripción de cada skill
       2. Pasar self._load_skill_tool a create_react_agent de LangGraph
-      3. El agente llamará load_skill() on-demand según lo que necesite
+         → el agente llama load_skill() on-demand
     """
 
     _SYSTEM_PROMPT_BASE = (
@@ -64,7 +62,7 @@ class ReviewerAgent:
     def review(self, script: SqlScript, validator_feedback: str | None = None) -> str:
         """
         Revisa el script SQL.
-        Si validator_feedback está presente, es un reintento: el validador
+        Si validator_feedback está presente es un reintento: el validador
         detectó problemas en el review anterior y pide que se corrijan.
         """
         sql_content = script.file.read_text(encoding="utf-8")

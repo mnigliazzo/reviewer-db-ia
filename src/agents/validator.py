@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-if TYPE_CHECKING:
-    from ..main import SqlScript
+from ..models import SqlScript
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +27,7 @@ class ValidatorAgent:
       - Las recomendaciones mencionan objetos SQL concretos (tablas, columnas, SPs)
       - No es superficial ni genérico
 
-    Si el review no cumple, retorna el feedback específico para que el
+    Si el review no cumple, retorna feedback específico para que el
     ReviewerAgent lo corrija en un reintento.
     """
 
@@ -77,6 +75,5 @@ class ValidatorAgent:
         if response.upper().startswith("APROBADO"):
             return ValidationResult(approved=True, feedback="")
 
-        # Extraer el feedback del rechazo
         feedback = response.replace("RECHAZADO", "").strip()
         return ValidationResult(approved=False, feedback=feedback)

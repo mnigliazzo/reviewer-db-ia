@@ -1,28 +1,17 @@
 import argparse
 import logging
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_ollama import ChatOllama
 
-from .agents import ReporterAgent, ReviewerAgent, ScriptReview, ValidatorAgent
+from .agents import ReporterAgent, ReviewerAgent, ValidatorAgent
+from .models import ScriptReview, SqlScript
 
 logger = logging.getLogger(__name__)
 
 SKILLS_BASE_PATH = Path(__file__).parent / "skills"
 CRITICAL_MARKERS = ["[CRITICAL]", "[HIGH]", "CRITICAL:", "HIGH PRIORITY", "PRIORIDAD ALTA", "[ALTA]"]
-
-
-# ---------------------------------------------------------------------------
-# Estructura de datos
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SqlScript:
-    migration: str      # ej: "20260407112400"
-    file: Path
-    is_rollback: bool
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +66,7 @@ def run_review_pipeline(
     """
     feedback = None
     review = ""
+    attempt = 1
 
     for attempt in range(1, max_retries + 2):  # +2: intento inicial + N reintentos
         if attempt > 1:
@@ -93,7 +83,7 @@ def run_review_pipeline(
         feedback = result.feedback
 
         if attempt == max_retries + 1:
-            logger.warning(f"  Se agotaron los reintentos. Usando el último review disponible.")
+            logger.warning("  Se agotaron los reintentos. Usando el último review disponible.")
 
     has_critical = any(m in review.upper() for m in CRITICAL_MARKERS)
     return ScriptReview(script=script, review=review, attempts=attempt, has_critical=has_critical)
@@ -105,11 +95,11 @@ def run_review_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(description="CI SQL Reviewer powered by AI (multi-agente)")
-    parser.add_argument("--scripts-path",  type=str, required=True, help="Path to the migration scripts root folder")
-    parser.add_argument("--ollama-url",    type=str, required=True, help="Ollama API URL")
-    parser.add_argument("--model-agent",   type=str, required=True, help="AI Model name")
-    parser.add_argument("--max-retries",   type=int, default=1,     help="Reintentos máximos si el validador rechaza (default: 1)")
-    parser.add_argument("--skip-reporter", action="store_true",     help="Omitir informe ejecutivo final (más rápido en CPU)")
+    parser.add_argument("--scripts-path",  type=str, required=True,  help="Path to the migration scripts root folder")
+    parser.add_argument("--ollama-url",    type=str, required=True,  help="Ollama API URL")
+    parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
+    parser.add_argument("--max-retries",   type=int, default=1,      help="Reintentos si el validador rechaza (default: 1)")
+    parser.add_argument("--skip-reporter", action="store_true",      help="Omitir informe ejecutivo final (más rápido en CPU)")
     parser.add_argument("--log-level",     type=str, default="INFO", help="Log level")
     args = parser.parse_args()
 
@@ -135,10 +125,9 @@ def main():
     rollback = sum(1 for s in scripts if s.is_rollback)
     logger.info(f"Found {len(scripts)} SQL script(s) — {forward} forward, {rollback} rollback")
 
-    # Inicializar agentes (comparten el mismo modelo)
     logger.info(f"Initializing agents — model: {args.model_agent}")
-    model    = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
-    reviewer = ReviewerAgent(model, SKILLS_BASE_PATH)
+    model     = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
+    reviewer  = ReviewerAgent(model, SKILLS_BASE_PATH)
     validator = ValidatorAgent(model)
     reporter  = ReporterAgent(model) if not args.skip_reporter else None
 
@@ -178,8 +167,7 @@ def main():
         print("INFORME EJECUTIVO FINAL")
         print(f"{'#' * 60}")
         try:
-            final_report = reporter.report(all_reviews)
-            print(final_report)
+            print(reporter.report(all_reviews))
         except Exception as e:
             logger.error(f"ReporterAgent failed: {e}")
 
