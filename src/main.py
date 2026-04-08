@@ -8,6 +8,7 @@ from langchain_ollama import ChatOllama
 from .agents import ReporterAgent, ReviewerAgent, ValidatorAgent
 from .graph import build_review_graph
 from .models import ScriptReview, SqlScript
+from .schema_memory import SchemaMemory
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +55,27 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
 # Orquestación via LangGraph
 # ---------------------------------------------------------------------------
 
-def run_review_pipeline(script: SqlScript, review_graph, max_retries: int) -> ScriptReview:
+def run_review_pipeline(
+    script: SqlScript,
+    review_graph,
+    max_retries: int,
+    memory: SchemaMemory,
+) -> ScriptReview:
     """Ejecuta el StateGraph de LangGraph para un script SQL."""
     final_state = review_graph.invoke({
         "script": script,
         "max_retries": max_retries,
+        "schema_context": memory.to_context_string(),
         "attempts": 0,
         "validator_feedback": None,
         "review": "",
         "approved": False,
     })
+
+    # Actualizar memoria con los objetos definidos en este script
+    sql_content = script.file.read_text(encoding="utf-8")
+    memory.ingest(sql_content)
+
     has_critical = any(m in final_state["review"].upper() for m in CRITICAL_MARKERS)
     return ScriptReview(
         script=script,
@@ -118,6 +130,7 @@ def main():
 
     all_reviews: list[ScriptReview] = []
     current_migration = None
+    memory = SchemaMemory()     # memoria acumulativa del esquema
 
     for script in scripts:
         if script.migration != current_migration:
@@ -130,7 +143,7 @@ def main():
         logger.info(f"Reviewing: {current_migration}/{script_label}")
 
         try:
-            result = run_review_pipeline(script, review_graph, args.max_retries)
+            result = run_review_pipeline(script, review_graph, args.max_retries, memory)
         except Exception as e:
             logger.error(f"Failed to review {script_label}: {e}")
             all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True))

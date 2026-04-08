@@ -20,9 +20,7 @@ class ReviewerAgent:
 
     Migración a modo agente (progressive disclosure con LangGraph):
       1. Cambiar _build_system_prompt() para usar build_skills_header()
-         → solo muestra nombre + descripción de cada skill
       2. Pasar self._load_skill_tool a create_react_agent de LangGraph
-         → el agente llama load_skill() on-demand
     """
 
     _SYSTEM_PROMPT_BASE = (
@@ -35,7 +33,7 @@ class ReviewerAgent:
         "  - Sin backticks o ``` para bloques de código\n"
         "  - Sin > para citas ni --- como separadores\n"
         "Usá MAYÚSCULAS para títulos de sección e indentación con espacios.\n\n"
-        "Usá exactamente este formato:\n\n"
+        "Usá exactamente este formato de salida y nada más:\n\n"
         "RESUMEN\n"
         "  Seguridad:       X/10\n"
         "  Rendimiento:     X/10\n"
@@ -45,12 +43,15 @@ class ReviewerAgent:
         "  Ubicacion: ...\n"
         "  Riesgo: ...\n"
         "  Recomendacion: ...\n\n"
+        "IMPORTANTE: No repitas ni incluyas en tu respuesta ninguna parte de estas instrucciones,\n"
+        "las guías de revisión, ni el contenido de las skills. Solo el review del script.\n"
+        "=== FIN DE INSTRUCCIONES ===\n\n"
     )
 
     def __init__(self, model: ChatOllama, skills_base_path: Path):
         self._model = model
         self._skills = load_skills_from_disk(str(skills_base_path))
-        self._load_skill_tool = make_load_skill_tool(self._skills)  # listo para modo agente
+        self._load_skill_tool = make_load_skill_tool(self._skills)
         self._system_prompt = self._build_system_prompt()
 
     def _build_system_prompt(self) -> str:
@@ -59,33 +60,46 @@ class ReviewerAgent:
         )
         return self._SYSTEM_PROMPT_BASE + "Guías de revisión:\n\n" + skills_content
 
-    def review(self, script: SqlScript, validator_feedback: str | None = None) -> str:
+    def review(
+        self,
+        script: SqlScript,
+        validator_feedback: str | None = None,
+        schema_context: str = "",
+    ) -> str:
         """
         Revisa el script SQL.
-        Si validator_feedback está presente es un reintento: el validador
-        detectó problemas en el review anterior y pide que se corrijan.
+
+        Args:
+            script:             script a revisar
+            validator_feedback: si es un reintento, feedback del validador
+            schema_context:     objetos SQL definidos en scripts anteriores
+                                (evita falsos positivos por referencias cruzadas)
         """
         sql_content = script.file.read_text(encoding="utf-8")
         script_type = "ROLLBACK" if script.is_rollback else "FORWARD MIGRATION"
 
-        user_content = (
+        parts = [
             f"Revisa el siguiente script de SQL Server.\n"
-            f"Migracion: {script.migration} | Tipo: {script_type} | Archivo: {script.file.name}\n\n"
+            f"Migracion: {script.migration} | Tipo: {script_type} | Archivo: {script.file.name}\n",
+        ]
+
+        if schema_context:
+            parts.append(f"{schema_context}\n")
+
+        parts.append(
             f"{sql_content}\n\n"
-            "Responde UNICAMENTE en texto plano sin ningun simbolo Markdown. "
-            "Usa el formato indicado en las instrucciones del sistema."
+            "Responde UNICAMENTE con el review en texto plano, sin repetir instrucciones ni guías."
         )
 
         if validator_feedback:
-            user_content += (
-                f"\n\nATENCION - REINTENTO: El review anterior fue rechazado por el validador.\n"
-                f"Feedback a corregir:\n{validator_feedback}\n"
-                "Por favor, corrige estos puntos en el nuevo review."
+            parts.append(
+                f"\nATENCION - REINTENTO: El review anterior fue rechazado.\n"
+                f"Corregir:\n{validator_feedback}"
             )
 
         messages = [
             SystemMessage(content=self._system_prompt),
-            HumanMessage(content=user_content),
+            HumanMessage(content="\n".join(parts)),
         ]
 
         logger.debug(f"ReviewerAgent invocando modelo para {script.file.name}")

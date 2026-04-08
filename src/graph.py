@@ -34,12 +34,13 @@ class ReviewState(TypedDict):
     # Input (inmutable durante el grafo)
     script: SqlScript
     max_retries: int
+    schema_context: str         # objetos SQL de scripts anteriores (memoria)
 
     # Seguimiento
     attempts: int
     validator_feedback: Optional[str]
 
-    # Output acumulado
+    # Output
     review: str
     approved: bool
 
@@ -55,13 +56,12 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
     puedan llamarlos sin necesitar acceso global.
     """
 
-    # --- Nodos ---
-
     def reviewer_node(state: ReviewState) -> dict:
         logger.debug(f"[reviewer_node] intento {state['attempts'] + 1} — {state['script'].file.name}")
         review = reviewer.review(
             state["script"],
             validator_feedback=state.get("validator_feedback"),
+            schema_context=state.get("schema_context", ""),
         )
         return {
             "review": review,
@@ -82,8 +82,6 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
             "validator_feedback": result.feedback if not result.approved else None,
         }
 
-    # --- Edge condicional ---
-
     def should_retry(state: ReviewState) -> str:
         if state["approved"]:
             return "done"
@@ -92,8 +90,6 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
             return "done"
         logger.info(f"  Reintento {state['attempts']}/{state['max_retries']} para {state['script'].file.name}")
         return "retry"
-
-    # --- Construcción del grafo ---
 
     graph = StateGraph(ReviewState)
     graph.add_node("reviewer", reviewer_node)
