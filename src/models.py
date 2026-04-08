@@ -15,3 +15,4 @@ class ScriptReview:
     review: str
     attempts: int           # cuántos intentos necesitó (1 = aprobado al primer intento)
     has_critical: bool
+    skills_used: list[str]  # skills que el agente cargó explícitamente vía load_skill()

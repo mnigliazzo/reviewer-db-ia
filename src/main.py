@@ -70,6 +70,7 @@ def run_review_pipeline(
         "validator_feedback": None,
         "review": "",
         "approved": False,
+        "skills_used": [],
     })
 
     # Actualizar memoria con los objetos definidos en este script
@@ -82,6 +83,7 @@ def run_review_pipeline(
         review=final_state["review"],
         attempts=final_state["attempts"],
         has_critical=has_critical,
+        skills_used=final_state.get("skills_used", []),
     )
 
 
@@ -153,6 +155,7 @@ def main():
 
         logger.info(f"{'=' * 60}")
         logger.info(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
+        logger.info(f"Skills usadas: {', '.join(result.skills_used) if result.skills_used else 'ninguna'}")
         logger.info(f"{'=' * 60}")
         logger.info(result.review)
 

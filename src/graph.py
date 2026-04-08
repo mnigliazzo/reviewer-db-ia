@@ -43,6 +43,7 @@ class ReviewState(TypedDict):
     # Output
     review: str
     approved: bool
+    skills_used: list[str]      # skills cargadas vía load_skill() en este ciclo
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
 
     def reviewer_node(state: ReviewState) -> dict:
         logger.debug(f"[reviewer_node] intento {state['attempts'] + 1} — {state['script'].file.name}")
-        review = reviewer.review(
+        review, skills_used = reviewer.review(
             state["script"],
             validator_feedback=state.get("validator_feedback"),
             schema_context=state.get("schema_context", ""),
@@ -66,6 +67,7 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
         return {
             "review": review,
             "attempts": state["attempts"] + 1,
+            "skills_used": skills_used,
         }
 
     def validator_node(state: ReviewState) -> dict:
@@ -104,3 +106,4 @@ def build_review_graph(reviewer: ReviewerAgent, validator: ValidatorAgent):
     )
 
     return graph.compile()
+
