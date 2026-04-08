@@ -7,6 +7,7 @@ dependencies = [
     "langchain",
     "langchain-core",
     "langchain-ollama",
+    "langgraph",
 ]
 
 [build-system]

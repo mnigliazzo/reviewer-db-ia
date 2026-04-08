@@ -6,6 +6,7 @@ from pathlib import Path
 from langchain_ollama import ChatOllama
 
 from .agents import ReporterAgent, ReviewerAgent, ValidatorAgent
+from .graph import build_review_graph
 from .models import ScriptReview, SqlScript
 
 logger = logging.getLogger(__name__)
@@ -50,43 +51,26 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
 
 
 # ---------------------------------------------------------------------------
-# Orquestación multi-agente
+# Orquestación via LangGraph
 # ---------------------------------------------------------------------------
 
-def run_review_pipeline(
-    script: SqlScript,
-    reviewer: ReviewerAgent,
-    validator: ValidatorAgent,
-    max_retries: int,
-) -> ScriptReview:
-    """
-    Pipeline por script:
-      ReviewerAgent → ValidatorAgent → (¿aprobado?) → listo
-                            ↑_____________ reintento (max_retries veces)
-    """
-    feedback = None
-    review = ""
-    attempt = 1
-
-    for attempt in range(1, max_retries + 2):  # +2: intento inicial + N reintentos
-        if attempt > 1:
-            logger.info(f"  Reintento {attempt - 1}/{max_retries} para {script.file.name}")
-
-        review = reviewer.review(script, validator_feedback=feedback)
-
-        result = validator.validate(script, review)
-        if result.approved:
-            logger.info(f"  Validacion: APROBADO (intento {attempt})")
-            break
-
-        logger.warning(f"  Validacion: RECHAZADO — {result.feedback[:80]}...")
-        feedback = result.feedback
-
-        if attempt == max_retries + 1:
-            logger.warning("  Se agotaron los reintentos. Usando el último review disponible.")
-
-    has_critical = any(m in review.upper() for m in CRITICAL_MARKERS)
-    return ScriptReview(script=script, review=review, attempts=attempt, has_critical=has_critical)
+def run_review_pipeline(script: SqlScript, review_graph, max_retries: int) -> ScriptReview:
+    """Ejecuta el StateGraph de LangGraph para un script SQL."""
+    final_state = review_graph.invoke({
+        "script": script,
+        "max_retries": max_retries,
+        "attempts": 0,
+        "validator_feedback": None,
+        "review": "",
+        "approved": False,
+    })
+    has_critical = any(m in final_state["review"].upper() for m in CRITICAL_MARKERS)
+    return ScriptReview(
+        script=script,
+        review=final_state["review"],
+        attempts=final_state["attempts"],
+        has_critical=has_critical,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +110,11 @@ def main():
     logger.info(f"Found {len(scripts)} SQL script(s) — {forward} forward, {rollback} rollback")
 
     logger.info(f"Initializing agents — model: {args.model_agent}")
-    model     = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
-    reviewer  = ReviewerAgent(model, SKILLS_BASE_PATH)
-    validator = ValidatorAgent(model)
-    reporter  = ReporterAgent(model) if not args.skip_reporter else None
+    model        = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
+    reviewer     = ReviewerAgent(model, SKILLS_BASE_PATH)
+    validator    = ValidatorAgent(model)
+    reporter     = ReporterAgent(model) if not args.skip_reporter else None
+    review_graph = build_review_graph(reviewer, validator)
 
     all_reviews: list[ScriptReview] = []
     current_migration = None
@@ -145,7 +130,7 @@ def main():
         logger.info(f"Reviewing: {current_migration}/{script_label}")
 
         try:
-            result = run_review_pipeline(script, reviewer, validator, args.max_retries)
+            result = run_review_pipeline(script, review_graph, args.max_retries)
         except Exception as e:
             logger.error(f"Failed to review {script_label}: {e}")
             all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True))
