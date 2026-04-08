@@ -137,9 +137,9 @@ def main():
     for script in scripts:
         if script.migration != current_migration:
             current_migration = script.migration
-            print(f"\n{'#' * 60}")
-            print(f"MIGRATION: {current_migration}")
-            print(f"{'#' * 60}")
+            logger.info(f"{'#' * 60}")
+            logger.info(f"MIGRATION: {current_migration}")
+            logger.info(f"{'#' * 60}")
 
         script_label = f"[ROLLBACK] {script.file.name}" if script.is_rollback else script.file.name
         logger.info(f"Reviewing: {current_migration}/{script_label}")
@@ -153,21 +153,21 @@ def main():
 
         all_reviews.append(result)
 
-        print(f"\n{'=' * 60}")
-        print(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
-        print("=" * 60)
-        print(result.review)
+        logger.info(f"{'=' * 60}")
+        logger.info(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
+        logger.info(f"{'=' * 60}")
+        logger.info(result.review)
 
         if result.has_critical:
             logger.warning(f"Critical issues detected in {script_label}")
 
     # Informe ejecutivo final
     if reporter:
-        print(f"\n{'#' * 60}")
-        print("INFORME EJECUTIVO FINAL")
-        print(f"{'#' * 60}")
+        logger.info(f"{'#' * 60}")
+        logger.info("INFORME EJECUTIVO FINAL")
+        logger.info(f"{'#' * 60}")
         try:
-            print(reporter.report(all_reviews))
+            logger.info(reporter.report(all_reviews))
         except Exception as e:
             logger.error(f"ReporterAgent failed: {e}")
 
