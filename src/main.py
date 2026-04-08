@@ -25,28 +25,31 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     """
     Recorre la estructura:
         <scripts_path>/
-            <MIGRATION_FOLDER>/
-                NNN.Script.sql
-                rollback/
+            <YEAR>/                     (ej: 2026)
+                <MIGRATION_FOLDER>/     (ej: 20260407112400)
                     NNN.Script.sql
+                    rollback/
+                        NNN.Script.sql
 
     Devuelve los scripts ordenados por:
-      1. carpeta de migración (orden lexicográfico = cronológico por timestamp)
-      2. scripts forward primero, rollback después
-      3. nombre de archivo (orden numérico por prefijo NNN)
+      1. año
+      2. carpeta de migración (orden lexicográfico = cronológico por timestamp)
+      3. scripts forward primero, rollback después
+      4. nombre de archivo (orden numérico por prefijo NNN)
     """
     scripts: list[SqlScript] = []
 
-    for migration_dir in sorted(p for p in scripts_path.iterdir() if p.is_dir()):
-        # Scripts forward (hijos directos)
-        for sql_file in sorted(migration_dir.glob("*.sql")):
-            scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=False))
+    for year_dir in sorted(p for p in scripts_path.iterdir() if p.is_dir()):
+        for migration_dir in sorted(p for p in year_dir.iterdir() if p.is_dir()):
+            # Scripts forward (hijos directos)
+            for sql_file in sorted(migration_dir.glob("*.sql")):
+                scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=False))
 
-        # Scripts de rollback
-        rollback_dir = migration_dir / "rollback"
-        if rollback_dir.is_dir():
-            for sql_file in sorted(rollback_dir.glob("*.sql")):
-                scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=True))
+            # Scripts de rollback
+            rollback_dir = migration_dir / "rollback"
+            if rollback_dir.is_dir():
+                for sql_file in sorted(rollback_dir.glob("*.sql")):
+                    scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=True))
 
     return scripts
 
