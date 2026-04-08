@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
@@ -53,15 +53,9 @@ class ReviewerAgent:
 
     def __init__(self, model: ChatOllama, skills_base_path: Path):
         skills = load_skills_from_disk(str(skills_base_path))
-        load_skill_tool = make_load_skill_tool(skills)
-
-        system_prompt = self._SYSTEM_PROMPT_BASE + build_skills_header(skills)
-
-        self._agent = create_react_agent(
-            model=model,
-            tools=[load_skill_tool],
-            state_modifier=system_prompt,
-        )
+        self._load_skill_tool = make_load_skill_tool(skills)
+        self._system_prompt = self._SYSTEM_PROMPT_BASE + build_skills_header(skills)
+        self._agent = create_react_agent(model=model, tools=[self._load_skill_tool])
 
     def review(
         self,
@@ -96,7 +90,12 @@ class ReviewerAgent:
                 f"Corregir:\n{validator_feedback}"
             )
 
-        result = self._agent.invoke({"messages": [HumanMessage(content="\n".join(parts))]})
+        result = self._agent.invoke({
+            "messages": [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content="\n".join(parts)),
+            ]
+        })
 
         # Extraer skills usadas de los tool_calls del agente
         skills_used: list[str] = []
