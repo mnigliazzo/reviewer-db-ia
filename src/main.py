@@ -62,9 +62,24 @@ def build_system_prompt() -> str:
     return (
         "You are an expert SQL Server DBA and T-SQL code reviewer.\n"
         "Your task is to review SQL scripts and provide structured, actionable feedback.\n"
-        "Always respond in Spanish (castellano).\n"
-        "Do NOT use Markdown syntax (no #, ##, **, *, >, -, backticks for formatting). "
-        "Use plain text with UPPERCASE labels and indentation instead.\n\n"
+        "IMPORTANT: Always respond in Spanish (castellano).\n"
+        "IMPORTANT: Never use Markdown formatting. This means:\n"
+        "  - No # or ## or ### or #### for headings\n"
+        "  - No ** or * for bold or italic\n"
+        "  - No backticks or ``` for code blocks\n"
+        "  - No > for blockquotes\n"
+        "  - No --- as separators\n"
+        "Instead, use UPPERCASE plain text for section titles and indent with spaces.\n\n"
+        "Use this exact output format:\n"
+        "RESUMEN\n"
+        "  Seguridad:       X/10\n"
+        "  Rendimiento:     X/10\n"
+        "  Mantenibilidad:  X/10\n\n"
+        "HALLAZGOS\n\n"
+        "  [PRIORIDAD] [CATEGORIA]: Titulo del hallazgo\n"
+        "  Ubicacion: ...\n"
+        "  Riesgo: ...\n"
+        "  Recomendacion: ...\n\n"
         "Apply the following review guidelines:\n\n"
         f"{skills_content}"
     )
@@ -77,11 +92,11 @@ def review_sql_file(model: ChatOllama, system_prompt: str, script: SqlScript) ->
         SystemMessage(content=system_prompt),
         HumanMessage(
             content=(
-                f"Review the following SQL Server script.\n"
-                f"Migration: `{script.migration}` | Type: {script_type} | File: `{script.file.name}`\n\n"
-                f"```sql\n{sql_content}\n```\n\n"
-                "Provide a structured review with Security Score, Performance Score, "
-                "Maintainability Score (each 1-10), and detailed findings per issue."
+                f"Revisa el siguiente script de SQL Server.\n"
+                f"Migracion: {script.migration} | Tipo: {script_type} | Archivo: {script.file.name}\n\n"
+                f"{sql_content}\n\n"
+                "Responde UNICAMENTE en texto plano sin ningun simbolo Markdown. "
+                "Usa el formato indicado en las instrucciones del sistema."
             )
         ),
     ]
