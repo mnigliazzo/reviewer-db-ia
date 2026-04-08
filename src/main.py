@@ -61,7 +61,8 @@ def build_system_prompt() -> str:
     )
     return (
         "You are an expert SQL Server DBA and T-SQL code reviewer.\n"
-        "Your task is to review SQL scripts and provide structured, actionable feedback.\n\n"
+        "Your task is to review SQL scripts and provide structured, actionable feedback.\n"
+        "Always respond in Spanish (castellano).\n\n"
         "Apply the following review guidelines:\n\n"
         f"{skills_content}"
     )
