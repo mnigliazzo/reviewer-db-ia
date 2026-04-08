@@ -1,0 +1,6 @@
+use DB_PRUEBA
+GO
+CREATE TABLE Table1 (
+    Id INT PRIMARY KEY,
+    Name VARCHAR(50)
+)

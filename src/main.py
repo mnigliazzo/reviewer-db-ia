@@ -3,14 +3,35 @@ import logging
 import sys
 from pathlib import Path
 
-from langchain_ollama import ChatOllama
-
 from .agents import ReporterAgent, ReviewerAgent, ValidatorAgent
 from .graph import build_review_graph
 from .models import ScriptReview, SqlScript
 from .schema_memory import SchemaMemory
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_PROVIDERS = ("ollama", "openai", "openrouter", "groq")
+
+PROVIDER_DEFAULT_URLS = {
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
+
+def build_model(provider: str, base_url: str, model: str, api_key: str | None = None):
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(base_url=base_url, model=model, num_ctx=16384)
+    elif provider in ("openai", "openrouter", "groq"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            base_url=base_url or PROVIDER_DEFAULT_URLS[provider],
+            model=model,
+            api_key=api_key or "sk-no-key",
+        )
+    else:
+        raise ValueError(f"Provider no soportado: '{provider}'. Opciones: {SUPPORTED_PROVIDERS}")
 
 SKILLS_BASE_PATH = Path(__file__).parent / "skills"
 CRITICAL_MARKERS = ["[CRITICAL]", "[HIGH]", "CRITICAL:", "HIGH PRIORITY", "PRIORIDAD ALTA", "[ALTA]"]
@@ -93,12 +114,14 @@ def run_review_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(description="CI SQL Reviewer powered by AI (multi-agente)")
-    parser.add_argument("--scripts-path",  type=str, required=True,  help="Path to the migration scripts root folder")
-    parser.add_argument("--ollama-url",    type=str, required=True,  help="Ollama API URL")
-    parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
-    parser.add_argument("--max-retries",   type=int, default=1,      help="Reintentos si el validador rechaza (default: 1)")
-    parser.add_argument("--skip-reporter", action="store_true",      help="Omitir informe ejecutivo final (más rápido en CPU)")
-    parser.add_argument("--log-level",     type=str, default="INFO", help="Log level")
+    parser.add_argument("--scripts-path",  type=str, required=True,                   help="Path to the migration scripts root folder")
+    parser.add_argument("--provider",      type=str, default="ollama", choices=SUPPORTED_PROVIDERS, help="LLM provider")
+    parser.add_argument("--base-url",      type=str, required=True,                   help="Base URL del LLM provider")
+    parser.add_argument("--model-agent",   type=str, required=True,                   help="AI Model name")
+    parser.add_argument("--api-key",       type=str, default=None,                    help="API key (requerido para providers cloud)")
+    parser.add_argument("--max-retries",   type=int, default=1,                       help="Reintentos si el validador rechaza (default: 1)")
+    parser.add_argument("--skip-reporter", action="store_true",                       help="Omitir informe ejecutivo final (más rápido en CPU)")
+    parser.add_argument("--log-level",     type=str, default="INFO",                  help="Log level")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -123,8 +146,8 @@ def main():
     rollback = sum(1 for s in scripts if s.is_rollback)
     logger.info(f"Found {len(scripts)} SQL script(s) — {forward} forward, {rollback} rollback")
 
-    logger.info(f"Initializing agents — model: {args.model_agent}")
-    model        = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
+    logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
+    model        = build_model(args.provider, args.base_url, args.model_agent, args.api_key)
     reviewer     = ReviewerAgent(model, SKILLS_BASE_PATH)
     validator    = ValidatorAgent(model)
     reporter     = ReporterAgent(model) if not args.skip_reporter else None
