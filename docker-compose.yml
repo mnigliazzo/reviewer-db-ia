@@ -3,6 +3,8 @@ services:
     image: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/ollama/ollama:latest
     ports:
       - "11434:11434"
+    environment:
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-16384}
     volumes:
       - ${VOLUME_OLLAMA:-ollama_data}:/root/.ollama
 

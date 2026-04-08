@@ -135,7 +135,7 @@ def main():
     logger.info(f"Found {len(scripts)} SQL script(s) — {forward} forward, {rollback} rollback")
 
     logger.info(f"Initializing SQL Reviewer — model: {args.model_agent}")
-    model = ChatOllama(base_url=args.ollama_url, model=args.model_agent)
+    model = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
     system_prompt = build_system_prompt()
 
     has_critical = False
