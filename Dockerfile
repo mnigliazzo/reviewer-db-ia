@@ -23,4 +23,4 @@ RUN uv pip install -e /app/reviewer-db-ia
 
 WORKDIR /app/reviewer-db-ia
 
-CMD ["python", "-m", "src..main", "--help"]
+CMD ["python", "-m", "src.main", "--help"]
