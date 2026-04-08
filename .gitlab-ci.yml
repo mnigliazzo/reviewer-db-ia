@@ -1,0 +1,31 @@
+variables:
+  DOCKER_REGISTRY_GROUP: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT
+  DOCKER_PRIVATE_REGISTRY: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PUSH_PORT
+  DOCKER_ARTIFACT_NAME: "dba/$CI_PROJECT_NAME"
+
+default:
+  tags:
+    - docker
+    - personal
+  image: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/docker:18.09.3
+  services:
+  - name: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/pi/pi-docker:dind
+
+stages:
+  - build
+  - test
+
+build_docker:
+  stage: build
+  rules:
+  - if: '$CI_COMMIT_REF_NAME == "master"'
+  script:
+    - echo "$ROOT_CA_CERTIFICATE" >> pi-root-ca.crt
+    - docker pull $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/$DOCKER_ARTIFACT_NAME || true
+    - docker build --cache-from $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/$DOCKER_ARTIFACT_NAME -t $DOCKER_ARTIFACT_NAME
+      --build-arg HTTP_PROXY=$HTTP_PROXY
+      --build-arg HTTPS_PROXY=$HTTPS_PROXY
+      --build-arg NO_PROXY="$NO_PROXY"
+      --build-arg DOCKER_REGISTRY="$DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT" .
+    - docker tag $DOCKER_ARTIFACT_NAME $DOCKER_REGISTRY:$DOCKER_REGISTRY_PUSH_PORT/$DOCKER_ARTIFACT_NAME
+    - docker push $DOCKER_REGISTRY:$DOCKER_REGISTRY_PUSH_PORT/$DOCKER_ARTIFACT_NAME

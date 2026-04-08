@@ -1,0 +1,13 @@
+[project]
+name = "reviewer-db-ia"
+version = "0.1.0"
+description = "Reviewer DB Agent"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain",
+    "langchain-ollama",
+]
+
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
