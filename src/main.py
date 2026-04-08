@@ -62,7 +62,9 @@ def build_system_prompt() -> str:
     return (
         "You are an expert SQL Server DBA and T-SQL code reviewer.\n"
         "Your task is to review SQL scripts and provide structured, actionable feedback.\n"
-        "Always respond in Spanish (castellano).\n\n"
+        "Always respond in Spanish (castellano).\n"
+        "Do NOT use Markdown syntax (no #, ##, **, *, >, -, backticks for formatting). "
+        "Use plain text with UPPERCASE labels and indentation instead.\n\n"
         "Apply the following review guidelines:\n\n"
         f"{skills_content}"
     )
