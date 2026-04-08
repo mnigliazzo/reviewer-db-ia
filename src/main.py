@@ -4,22 +4,30 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from .skill_middleware import load_skills_from_disk
+from .agents import ReporterAgent, ReviewerAgent, ScriptReview, ValidatorAgent
 
 logger = logging.getLogger(__name__)
 
 SKILLS_BASE_PATH = Path(__file__).parent / "skills"
+CRITICAL_MARKERS = ["[CRITICAL]", "[HIGH]", "CRITICAL:", "HIGH PRIORITY", "PRIORIDAD ALTA", "[ALTA]"]
 
+
+# ---------------------------------------------------------------------------
+# Estructura de datos
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SqlScript:
-    migration: str      # nombre de la carpeta de migración, ej: "20260407112400"
+    migration: str      # ej: "20260407112400"
     file: Path
     is_rollback: bool
 
+
+# ---------------------------------------------------------------------------
+# Descubrimiento de scripts
+# ---------------------------------------------------------------------------
 
 def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     """
@@ -33,7 +41,7 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
 
     Devuelve los scripts ordenados por:
       1. año
-      2. carpeta de migración (orden lexicográfico = cronológico por timestamp)
+      2. carpeta de migración (cronológico por timestamp)
       3. scripts forward primero, rollback después
       4. nombre de archivo (orden numérico por prefijo NNN)
     """
@@ -41,11 +49,9 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
 
     for year_dir in sorted(p for p in scripts_path.iterdir() if p.is_dir()):
         for migration_dir in sorted(p for p in year_dir.iterdir() if p.is_dir()):
-            # Scripts forward (hijos directos)
             for sql_file in sorted(migration_dir.glob("*.sql")):
                 scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=False))
 
-            # Scripts de rollback
             rollback_dir = migration_dir / "rollback"
             if rollback_dir.is_dir():
                 for sql_file in sorted(rollback_dir.glob("*.sql")):
@@ -54,62 +60,57 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     return scripts
 
 
-def build_system_prompt() -> str:
-    skills = load_skills_from_disk(str(SKILLS_BASE_PATH))
-    skills_content = "\n\n---\n\n".join(
-        f"## Skill: {s['name']}\n\n{s['content']}" for s in skills
-    )
-    return (
-        "You are an expert SQL Server DBA and T-SQL code reviewer.\n"
-        "Your task is to review SQL scripts and provide structured, actionable feedback.\n"
-        "IMPORTANT: Always respond in Spanish (castellano).\n"
-        "IMPORTANT: Never use Markdown formatting. This means:\n"
-        "  - No # or ## or ### or #### for headings\n"
-        "  - No ** or * for bold or italic\n"
-        "  - No backticks or ``` for code blocks\n"
-        "  - No > for blockquotes\n"
-        "  - No --- as separators\n"
-        "Instead, use UPPERCASE plain text for section titles and indent with spaces.\n\n"
-        "Use this exact output format:\n"
-        "RESUMEN\n"
-        "  Seguridad:       X/10\n"
-        "  Rendimiento:     X/10\n"
-        "  Mantenibilidad:  X/10\n\n"
-        "HALLAZGOS\n\n"
-        "  [PRIORIDAD] [CATEGORIA]: Titulo del hallazgo\n"
-        "  Ubicacion: ...\n"
-        "  Riesgo: ...\n"
-        "  Recomendacion: ...\n\n"
-        "Apply the following review guidelines:\n\n"
-        f"{skills_content}"
-    )
+# ---------------------------------------------------------------------------
+# Orquestación multi-agente
+# ---------------------------------------------------------------------------
+
+def run_review_pipeline(
+    script: SqlScript,
+    reviewer: ReviewerAgent,
+    validator: ValidatorAgent,
+    max_retries: int,
+) -> ScriptReview:
+    """
+    Pipeline por script:
+      ReviewerAgent → ValidatorAgent → (¿aprobado?) → listo
+                            ↑_____________ reintento (max_retries veces)
+    """
+    feedback = None
+    review = ""
+
+    for attempt in range(1, max_retries + 2):  # +2: intento inicial + N reintentos
+        if attempt > 1:
+            logger.info(f"  Reintento {attempt - 1}/{max_retries} para {script.file.name}")
+
+        review = reviewer.review(script, validator_feedback=feedback)
+
+        result = validator.validate(script, review)
+        if result.approved:
+            logger.info(f"  Validacion: APROBADO (intento {attempt})")
+            break
+
+        logger.warning(f"  Validacion: RECHAZADO — {result.feedback[:80]}...")
+        feedback = result.feedback
+
+        if attempt == max_retries + 1:
+            logger.warning(f"  Se agotaron los reintentos. Usando el último review disponible.")
+
+    has_critical = any(m in review.upper() for m in CRITICAL_MARKERS)
+    return ScriptReview(script=script, review=review, attempts=attempt, has_critical=has_critical)
 
 
-def review_sql_file(model: ChatOllama, system_prompt: str, script: SqlScript) -> str:
-    sql_content = script.file.read_text(encoding="utf-8")
-    script_type = "ROLLBACK" if script.is_rollback else "FORWARD MIGRATION"
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(
-            content=(
-                f"Revisa el siguiente script de SQL Server.\n"
-                f"Migracion: {script.migration} | Tipo: {script_type} | Archivo: {script.file.name}\n\n"
-                f"{sql_content}\n\n"
-                "Responde UNICAMENTE en texto plano sin ningun simbolo Markdown. "
-                "Usa el formato indicado en las instrucciones del sistema."
-            )
-        ),
-    ]
-    response = model.invoke(messages)
-    return response.content
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="CI SQL Reviewer powered by AI")
-    parser.add_argument("--scripts-path", type=str, required=True, help="Path to the migration scripts root folder")
-    parser.add_argument("--ollama-url", type=str, required=True, help="Ollama API URL")
-    parser.add_argument("--model-agent", type=str, required=True, help="AI Model name")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
+    parser = argparse.ArgumentParser(description="CI SQL Reviewer powered by AI (multi-agente)")
+    parser.add_argument("--scripts-path",  type=str, required=True, help="Path to the migration scripts root folder")
+    parser.add_argument("--ollama-url",    type=str, required=True, help="Ollama API URL")
+    parser.add_argument("--model-agent",   type=str, required=True, help="AI Model name")
+    parser.add_argument("--max-retries",   type=int, default=1,     help="Reintentos máximos si el validador rechaza (default: 1)")
+    parser.add_argument("--skip-reporter", action="store_true",     help="Omitir informe ejecutivo final (más rápido en CPU)")
+    parser.add_argument("--log-level",     type=str, default="INFO", help="Log level")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -130,19 +131,21 @@ def main():
         logger.warning(f"No .sql files found under {scripts_path}")
         sys.exit(0)
 
-    forward = sum(1 for s in scripts if not s.is_rollback)
+    forward  = sum(1 for s in scripts if not s.is_rollback)
     rollback = sum(1 for s in scripts if s.is_rollback)
     logger.info(f"Found {len(scripts)} SQL script(s) — {forward} forward, {rollback} rollback")
 
-    logger.info(f"Initializing SQL Reviewer — model: {args.model_agent}")
-    model = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
-    system_prompt = build_system_prompt()
+    # Inicializar agentes (comparten el mismo modelo)
+    logger.info(f"Initializing agents — model: {args.model_agent}")
+    model    = ChatOllama(base_url=args.ollama_url, model=args.model_agent, num_ctx=16384)
+    reviewer = ReviewerAgent(model, SKILLS_BASE_PATH)
+    validator = ValidatorAgent(model)
+    reporter  = ReporterAgent(model) if not args.skip_reporter else None
 
-    has_critical = False
+    all_reviews: list[ScriptReview] = []
     current_migration = None
 
     for script in scripts:
-        # Imprimir encabezado de migración cuando cambia
         if script.migration != current_migration:
             current_migration = script.migration
             print(f"\n{'#' * 60}")
@@ -153,25 +156,34 @@ def main():
         logger.info(f"Reviewing: {current_migration}/{script_label}")
 
         try:
-            review = review_sql_file(model, system_prompt, script)
+            result = run_review_pipeline(script, reviewer, validator, args.max_retries)
         except Exception as e:
             logger.error(f"Failed to review {script_label}: {e}")
-            has_critical = True
+            all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True))
             continue
 
-        print(f"\n{'=' * 60}")
-        print(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}")
-        print("=" * 60)
-        print(review)
+        all_reviews.append(result)
 
-        # Heurística para detectar problemas críticos en CI
-        review_upper = review.upper()
-        critical_markers = ["[CRITICAL]", "[HIGH]", "CRITICAL:", "HIGH PRIORITY", "PRIORIDAD ALTA"]
-        if any(marker in review_upper for marker in critical_markers):
-            has_critical = True
+        print(f"\n{'=' * 60}")
+        print(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
+        print("=" * 60)
+        print(result.review)
+
+        if result.has_critical:
             logger.warning(f"Critical issues detected in {script_label}")
 
-    if has_critical:
+    # Informe ejecutivo final
+    if reporter:
+        print(f"\n{'#' * 60}")
+        print("INFORME EJECUTIVO FINAL")
+        print(f"{'#' * 60}")
+        try:
+            final_report = reporter.report(all_reviews)
+            print(final_report)
+        except Exception as e:
+            logger.error(f"ReporterAgent failed: {e}")
+
+    if any(r.has_critical for r in all_reviews):
         logger.error("One or more scripts have critical issues. Review the output above.")
         sys.exit(1)
 

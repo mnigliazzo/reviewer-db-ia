@@ -2,6 +2,8 @@ import re
 from pathlib import Path
 from typing import List, TypedDict
 
+from langchain_core.tools import tool
+
 
 class Skill(TypedDict):
     name: str
@@ -16,7 +18,7 @@ def load_skills_from_disk(base_path: str) -> List[Skill]:
     # Captura el bloque de frontmatter entre --- y el resto del contenido
     frontmatter_re = re.compile(r'^---\s*\n(.*?)\n---\s*\n(.*)', re.DOTALL | re.MULTILINE)
 
-    for skill_dir in path.iterdir():
+    for skill_dir in sorted(path.iterdir()):
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
             continue
@@ -39,3 +41,49 @@ def load_skills_from_disk(base_path: str) -> List[Skill]:
         })
 
     return skills
+
+
+def build_skills_header(skills: List[Skill]) -> str:
+    """
+    Retorna solo nombre + descripción de cada skill.
+    Usado en el modo agente (progressive disclosure): el agente
+    ve las descripciones y decide cuáles cargar con load_skill().
+    """
+    lines = ["## Skills disponibles\n"]
+    for s in skills:
+        lines.append(f"- {s['name']}: {s['description']}")
+    lines.append(
+        "\nUsa la herramienta load_skill() para cargar el contenido "
+        "completo de la skill que necesites."
+    )
+    return "\n".join(lines)
+
+
+def make_load_skill_tool(skills: List[Skill]):
+    """
+    Fabrica el tool load_skill con las skills ya cargadas.
+    Retorna una función decorada con @tool lista para pasarle
+    a un agente de LangGraph/LangChain.
+
+    Uso futuro (modo agente):
+        tools = [make_load_skill_tool(skills)]
+        agent = create_react_agent(model, tools)
+    """
+    skill_map = {s["name"]: s["content"] for s in skills}
+    available = ", ".join(skill_map.keys())
+
+    @tool
+    def load_skill(skill_name: str) -> str:
+        """Carga el contenido completo de una skill de revisión SQL.
+
+        Llamar esta herramienta cuando necesites las guías detalladas
+        de una skill específica antes de revisar el código SQL.
+
+        Args:
+            skill_name: Nombre de la skill a cargar, ej: "sql-code-review"
+        """
+        if skill_name in skill_map:
+            return f"Skill cargada: {skill_name}\n\n{skill_map[skill_name]}"
+        return f"Skill '{skill_name}' no encontrada. Disponibles: {available}"
+
+    return load_skill
