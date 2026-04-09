@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - DOCKER_REGISTRY=${DOCKER_REGISTRY}${DOCKER_REGISTRY:+:}${DOCKER_REGISTRY_PULL_PORT}${DOCKER_REGISTRY_PULL_PORT:+/}
+        - DOCKER_REGISTRY=${DOCKER_REGISTRY}${DOCKER_REGISTRY:+:}${DOCKER_REGISTRY_PULL_PORT}
         - HTTP_PROXY=${HTTP_PROXY:-}
         - HTTPS_PROXY=${HTTPS_PROXY:-}
         - NO_PROXY=${NO_PROXY:-}
@@ -27,7 +27,7 @@ services:
       --provider ${PROVIDER:-ollama}
       --base-url ${MODEL_BASE_URL}
       --model-agent ${MODEL_AGENTS}
-      --api-key ${MODEL_API_KEY:-}
+      
     volumes:
       - ${REVIEW_SCRIPTS_PATH:-./demo/deploy}:/app/scripts_review
 

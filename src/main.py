@@ -118,7 +118,7 @@ def main():
     parser.add_argument("--provider",      type=str, default="ollama", choices=SUPPORTED_PROVIDERS, help="LLM provider")
     parser.add_argument("--base-url",      type=str, required=True,                   help="Base URL del LLM provider")
     parser.add_argument("--model-agent",   type=str, required=True,                   help="AI Model name")
-    parser.add_argument("--api-key",       type=str, default=None,                    help="API key (requerido para providers cloud)")
+    parser.add_argument("--api-key",       type=str,  required=False,                   help="API key (requerido para providers cloud)")
     parser.add_argument("--max-retries",   type=int, default=1,                       help="Reintentos si el validador rechaza (default: 1)")
     parser.add_argument("--skip-reporter", action="store_true",                       help="Omitir informe ejecutivo final (más rápido en CPU)")
     parser.add_argument("--log-level",     type=str, default="INFO",                  help="Log level")
