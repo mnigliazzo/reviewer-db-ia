@@ -32,6 +32,15 @@ completamente. No lo menciones, ni como hallazgo de baja prioridad:
       o identificadores: INT es el tipo estándar y correcto para PKs.
   11. INSERT de un único registro como hallazgo de rendimiento: un INSERT de seed
       data con valores fijos es correcto, sin importar cuántas filas inserte.
+  12. @@SERVERNAME, @@SERVICENAME y cualquier variable con prefijo @@ son variables
+      de sistema de SQL Server. No se declaran ni inicializan por el usuario.
+      No reportar "variable no declarada" ni "variable no inicializada" para @@variables.
+  13. UPDATE o DELETE con WHERE sobre una columna que es PK o UNIQUE con un valor
+      literal fijo (ej: WHERE Id = 2): está garantizado que afecta una sola fila.
+      No reportar como riesgo de "afectar múltiples filas" ni pedir WHERE más específico.
+  14. UPDATE o DELETE con valores literales fijos en el WHERE no tienen riesgo de
+      SQL Injection. No sugerir parametrización para valores fijos hardcodeados en
+      scripts de migración.
 
 Formato de salida:
 

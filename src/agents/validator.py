@@ -10,14 +10,18 @@ logger = logging.getLogger(__name__)
 
 _PLACEHOLDER = re.compile(r'^\.{2,}$|^-$|^n/a$|^$', re.IGNORECASE)
 _SCORE_PATTERN = re.compile(r'\b\d+(?:\.\d+)?/10\b')
-_FINDING_HEADER = re.compile(r'^\s*\[[^\]]+\]\s*\[[^\]]+\]')
+_FINDING_HEADER = re.compile(r'^\s*\[[^\]]+\]')
 _PROHIBITED_FINDING_TITLE = re.compile(
     # Comentarios / documentación
     r'comentari[oa]s?|documentaci[oó]n'
     # "no se utilizan parámetros (en las inserciones / para los valores)"
     r'|no\s+se\s+utilizan\s+par[aá]metros?'
     # "uso de valores fijos/literales en INSERT"
-    r'|valores?\s+(?:fijo|literal|constante)',
+    r'|valores?\s+(?:fijo|literal|constante)'
+    # Permisos del usuario ejecutor (regla #2)
+    r'|permisos?|acceso\s+y\s+control'
+    # GO y USE (reglas #3 y #4)
+    r'|\bGO\b|USE\s*\[',
     re.IGNORECASE,
 )
 
