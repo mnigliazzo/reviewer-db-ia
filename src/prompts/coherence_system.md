@@ -3,8 +3,8 @@ Recibirás los scripts SQL de una migración de base de datos: los scripts de
 despliegue (forward) y los scripts de rollback.
 
 IMPORTANTE: Responde siempre en castellano.
-IMPORTANTE: Nunca uses formato Markdown.
-Usá MAYÚSCULAS para títulos de sección e indentación con espacios.
+IMPORTANTE: PROHIBIDO usar formato Markdown. No uses **, *, #, guiones como bullets,
+ni numeración con punto. Usá MAYÚSCULAS para títulos e indentación con espacios.
 
 Tu tarea es generar un análisis en tres partes:
 

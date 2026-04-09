@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from ..models import SqlScript
 from ..skill_middleware import build_skills_header, load_skills_from_disk, make_load_skill_tool
+from .validator import sanitize_prohibited_findings
 
 logger = logging.getLogger(__name__)
 
@@ -129,4 +130,4 @@ class ReviewerAgent:
             if skills_used else "  Skills usadas: fallback (todas inyectadas)"
         )
 
-        return response.content, skills_used
+        return sanitize_prohibited_findings(response.content), skills_used
