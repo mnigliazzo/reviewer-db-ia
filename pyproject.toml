@@ -5,7 +5,10 @@ description = "Reviewer DB Agent"
 requires-python = ">=3.12"
 dependencies = [
     "langchain",
+    "langchain-core",
     "langchain-ollama",
+    "langchain-openai",
+    "langgraph",
 ]
 
 [build-system]

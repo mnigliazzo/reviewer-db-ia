@@ -1,106 +1,89 @@
-from langchain.agents.middleware import ModelRequest, ModelResponse, AgentMiddleware
-from langchain.messages import SystemMessage
-from typing import Callable
-from langchain.tools import tool
-
-
 import re
 from pathlib import Path
 from typing import List, TypedDict
+
+from langchain_core.tools import tool
+
 
 class Skill(TypedDict):
     name: str
     description: str
     content: str
 
+
 def load_skills_from_disk(base_path: str) -> List[Skill]:
     skills = []
     path = Path(base_path)
-    
-    # Regex para capturar el bloque entre --- y el resto del contenido
+
+    # Captura el bloque de frontmatter entre --- y el resto del contenido
     frontmatter_re = re.compile(r'^---\s*\n(.*?)\n---\s*\n(.*)', re.DOTALL | re.MULTILINE)
 
-    for skill_dir in path.iterdir():
+    for skill_dir in sorted(path.iterdir()):
         skill_file = skill_dir / "SKILL.md"
-        if skill_file.exists():
-            raw_text = skill_file.read_text(encoding="utf-8")
-            match = frontmatter_re.match(raw_text)
-            
-            if match:
-                # Extraer metadatos (YAML-like)
-                meta_block = match.group(1)
-                content_block = match.group(2)
-                
-                # Parsear campos simples
-                meta_data = {}
-                for line in meta_block.split('\n'):
-                    if ':' in line:
-                        k, v = line.split(':', 1)
-                        meta_data[k.strip()] = v.strip().strip("'").strip('"')
+        if not skill_file.exists():
+            continue
 
-                skills.append({
-                    "name": meta_data.get("name", skill_dir.name),
-                    "description": meta_data.get("description", ""),
-                    "content": content_block.strip()
-                })
+        raw_text = skill_file.read_text(encoding="utf-8")
+        match = frontmatter_re.match(raw_text)
+        if not match:
+            continue
+
+        meta_data = {}
+        for line in match.group(1).split('\n'):
+            if ':' in line:
+                k, v = line.split(':', 1)
+                meta_data[k.strip()] = v.strip().strip("'").strip('"')
+
+        skills.append({
+            "name": meta_data.get("name", skill_dir.name),
+            "description": meta_data.get("description", ""),
+            "content": match.group(2).strip(),
+        })
+
     return skills
 
-# Carga inicial
-SKILLS = load_skills_from_disk("src/skills")
 
-@tool
-def load_skill(skill_name: str) -> str:
-    """Load the full content of a skill into the agent's context.
-
-    Use this when you need detailed information about how to handle a specific
-    type of request. This will provide you with comprehensive instructions,
-    policies, and guidelines for the skill area.
-
-    Args:
-        skill_name: The name of the skill to load (e.g., "expense_reporting", "travel_booking")
+def build_skills_header(skills: List[Skill]) -> str:
     """
-    # Find and return the requested skill
-    for skill in SKILLS:
-        if skill["name"] == skill_name:
-            return f"Loaded skill: {skill_name}\n\n{skill['content']}"
+    Retorna solo nombre + descripción de cada skill.
+    Usado en el modo agente (progressive disclosure): el agente
+    ve las descripciones y decide cuáles cargar con load_skill().
+    """
+    lines = ["## Skills disponibles\n"]
+    for s in skills:
+        lines.append(f"- {s['name']}: {s['description']}")
+    lines.append(
+        "\nUsa la herramienta load_skill() para cargar el contenido "
+        "completo de la skill que necesites."
+    )
+    return "\n".join(lines)
 
-    # Skill not found
-    available = ", ".join(s["name"] for s in SKILLS)
-    return f"Skill '{skill_name}' not found. Available skills: {available}"
 
-class SkillMiddleware(AgentMiddleware):
-    """Middleware that injects skill descriptions into the system prompt."""
+def make_load_skill_tool(skills: List[Skill]):
+    """
+    Fabrica el tool load_skill con las skills ya cargadas.
+    Retorna una función decorada con @tool lista para pasarle
+    a un agente de LangGraph/LangChain.
 
-    # Register the load_skill tool as a class variable
-    tools = [load_skill]
+    Uso futuro (modo agente):
+        tools = [make_load_skill_tool(skills)]
+        agent = create_react_agent(model, tools)
+    """
+    skill_map = {s["name"]: s["content"] for s in skills}
+    available = ", ".join(skill_map.keys())
 
-    def __init__(self):
-        """Initialize and generate the skills prompt from SKILLS."""
-        # Build skills prompt from the SKILLS list
-        skills_list = []
-        for skill in SKILLS:
-            skills_list.append(
-                f"- **{skill['name']}**: {skill['description']}"
-            )
-        self.skills_prompt = "\n".join(skills_list)
+    @tool
+    def load_skill(skill_name: str) -> str:
+        """Carga el contenido completo de una skill de revisión SQL.
 
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        """Sync: Inject skill descriptions into system prompt."""
-        # Build the skills addendum
-        skills_addendum = (
-            f"\n\n## Available Skills\n\n{self.skills_prompt}\n\n"
-            "Use the load_skill tool when you need detailed information "
-            "about handling a specific type of request."
-        )
+        Llamar esta herramienta cuando necesites las guías detalladas
+        de una skill específica antes de revisar el código SQL.
 
-        # Append to system message content blocks
-        new_content = list(request.system_message.content_blocks) + [
-            {"type": "text", "text": skills_addendum}
-        ]
-        new_system_message = SystemMessage(content=new_content)
-        modified_request = request.override(system_message=new_system_message)
-        return handler(modified_request)
+        Args:
+            skill_name: Nombre de la skill a cargar, ej: "sql-code-review"
+        """
+        if skill_name in skill_map:
+            return f"Skill cargada: {skill_name}\n\n{skill_map[skill_name]}"
+        return f"Skill '{skill_name}' no encontrada. Disponibles: {available}"
+
+    return load_skill

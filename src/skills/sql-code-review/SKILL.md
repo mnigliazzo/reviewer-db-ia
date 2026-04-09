@@ -49,22 +49,29 @@ Perform a thorough SQL code review focusing on security, performance, maintainab
 ## 📊 SQL Server Specifics
 - Use `DATETIME2` instead of `DATETIME` for better precision and range.
 - Use `NVARCHAR(MAX)` only when truly necessary.
-- Use `TRY...CATCH` for error handling in stored procedures.
+- Use `TRY...CATCH` for error handling in stored procedures and DML scripts.
 - Consider `TABLOCK` for large bulk inserts if appropriate.
 
-## 🎯 Review Output Format
+## 🗄️ T-SQL Migration Script Patterns
 
-### Summary Assessment
-- **Security Score**: [1-10]
-- **Performance Score**: [1-10]
-- **Maintainability Score**: [1-10]
+### DDL Scripts (CREATE TABLE, ALTER TABLE)
+- **Schema qualification**: Always prefix objects with schema (`dbo.TableName`, not bare `TableName`).
+- **IDENTITY**: Integer PKs intended as auto-increment must declare `IDENTITY(1,1)`. Without it, every INSERT must provide the value manually and re-runs will cause PK violations.
+- **NULL / NOT NULL**: Columns are NULLable by default. Declare `NOT NULL` explicitly for required fields.
+- **Idempotency**: Use existence checks so the script can run safely more than once:
+  - CREATE: `IF OBJECT_ID('dbo.TableName', 'U') IS NULL CREATE TABLE dbo.TableName (...)`
+  - DROP: `IF OBJECT_ID('dbo.TableName', 'U') IS NOT NULL DROP TABLE dbo.TableName`
+  - ADD COLUMN: `IF COL_LENGTH('dbo.TableName', 'ColumnName') IS NULL ALTER TABLE dbo.TableName ADD ...`
+- **NVARCHAR vs VARCHAR**: Use `NVARCHAR` when the column may store Unicode characters (names, descriptions, free text).
 
-### Findings Details
-For each issue found, provide:
-1. **[PRIORITY] [CATEGORY]: [Description]**
-2. **Location**: Object name and approximate line.
-3. **Risk/Impact**: Technical explanation.
-4. **Recommendation**: Specific fix with code.
+### DML Scripts (INSERT, UPDATE, DELETE)
+- **TRY/CATCH**: Wrap DML in `BEGIN TRY / END TRY BEGIN CATCH / END CATCH` to handle errors gracefully.
+- **Transactions**: Use `BEGIN TRANSACTION / COMMIT / ROLLBACK` for multi-statement DML to guarantee atomicity.
+- **Schema qualification**: Always use `dbo.TableName`, not bare `TableName`.
+- **Duplicate guard**: For seed/reference INSERTs, check existence before inserting to ensure idempotency:
+  - `IF NOT EXISTS (SELECT 1 FROM dbo.TableName WHERE Id = 1) INSERT INTO dbo.TableName ...`
 
----
-*Derived from github/awesome-copilot SQL Code Review Skill.*
+### Rollback Scripts
+- **Idempotency**: Always guard DROP statements with `IF OBJECT_ID`:
+  - `IF OBJECT_ID('dbo.TableName', 'U') IS NOT NULL DROP TABLE dbo.TableName`
+- DROP TABLE, DROP PROCEDURE, TRUNCATE, DELETE are expected and correct in rollback scripts.

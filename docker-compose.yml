@@ -1,26 +1,33 @@
 services:
   ollama:
-    image: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT/ollama/ollama:latest
+    image: ${DOCKER_REGISTRY}${DOCKER_REGISTRY:+:}${DOCKER_REGISTRY_PULL_PORT}${DOCKER_REGISTRY_PULL_PORT:+/}ollama/ollama:latest
+    profiles:
+      - ollama
     ports:
       - "11434:11434"
+    environment:
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-16384}
     volumes:
       - ${VOLUME_OLLAMA:-ollama_data}:/root/.ollama
 
   reviewer:
-    image: $DOCKER_REGISTRY:$DOCKER_REGISTRY_PUSH_PORT/dba/reviewer-db-ia
+    image: ${DOCKER_REGISTRY}${DOCKER_REGISTRY:+:}${DOCKER_REGISTRY_PUSH_PORT}${DOCKER_REGISTRY_PUSH_PORT:+/}dba/reviewer-db-ia
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        - DOCKER_REGISTRY=$DOCKER_REGISTRY:$DOCKER_REGISTRY_PULL_PORT
+        - DOCKER_REGISTRY=${DOCKER_REGISTRY}${DOCKER_REGISTRY:+:}${DOCKER_REGISTRY_PULL_PORT}${DOCKER_REGISTRY_PULL_PORT:+/}
         - HTTP_PROXY=${HTTP_PROXY:-}
         - HTTPS_PROXY=${HTTPS_PROXY:-}
         - NO_PROXY=${NO_PROXY:-}
     command: >
-      python -m src.main  --log-level ${LOG_LEVEL:-INFO} --scripts-path /app/scripts_review  --ollama-url ${OLLAMA_URL}  --model-agent ${MODEL_AGENTS}
-    depends_on:
-      ollama:
-        condition: service_started
+      python -m src.main
+      --log-level ${LOG_LEVEL:-INFO}
+      --scripts-path /app/scripts_review
+      --provider ${PROVIDER:-ollama}
+      --base-url ${MODEL_BASE_URL}
+      --model-agent ${MODEL_AGENTS}
+      --api-key ${MODEL_API_KEY:-}
     volumes:
       - ${REVIEW_SCRIPTS_PATH:-./demo/deploy}:/app/scripts_review
 

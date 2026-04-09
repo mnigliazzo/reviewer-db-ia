@@ -1,5 +1,5 @@
 ARG DOCKER_REGISTRY
-FROM $DOCKER_REGISTRY/python:3.12-slim
+FROM ${DOCKER_REGISTRY:+$DOCKER_REGISTRY/}python:3.12-slim
 
 ARG http_proxy
 ARG https_proxy
@@ -23,4 +23,4 @@ RUN uv pip install -e /app/reviewer-db-ia
 
 WORKDIR /app/reviewer-db-ia
 
-CMD ["python", "-m", "src..main", "--help"]
+CMD ["python", "-m", "src.main", "--help"]
