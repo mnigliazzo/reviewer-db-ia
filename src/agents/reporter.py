@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
 
 from ..models import ScriptReview
 
 logger = logging.getLogger(__name__)
+
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
 class ReporterAgent:
@@ -19,31 +22,9 @@ class ReporterAgent:
     fueron revisados y validados.
     """
 
-    _SYSTEM_PROMPT = (
-        "Eres un DBA senior encargado de generar informes ejecutivos de calidad de código SQL.\n"
-        "Recibirás los reviews individuales de múltiples scripts SQL y deberás consolidarlos\n"
-        "en un informe ejecutivo final.\n"
-        "IMPORTANTE: Responde siempre en castellano.\n"
-        "IMPORTANTE: Nunca uses formato Markdown.\n"
-        "Usá MAYÚSCULAS para títulos de sección e indentación con espacios.\n\n"
-        "El informe debe incluir:\n\n"
-        "INFORME EJECUTIVO DE CALIDAD SQL\n\n"
-        "ESTADISTICAS GENERALES\n"
-        "  Total de scripts revisados: N\n"
-        "  Scripts con issues críticos: N\n"
-        "  Promedio Seguridad:       X/10\n"
-        "  Promedio Rendimiento:     X/10\n"
-        "  Promedio Mantenibilidad:  X/10\n\n"
-        "SCRIPTS QUE REQUIEREN ATENCION URGENTE\n"
-        "  [lista de scripts con issues críticos o altos]\n\n"
-        "PATRONES DE PROBLEMAS MAS FRECUENTES\n"
-        "  [problemas que aparecen en múltiples scripts]\n\n"
-        "RECOMENDACIONES GLOBALES\n"
-        "  [acciones a tomar a nivel de proyecto o equipo]\n"
-    )
-
-    def __init__(self, model: ChatOllama):
+    def __init__(self, model: BaseChatModel):
         self._model = model
+        self._system_prompt = (_PROMPTS_DIR / "reporter_system.md").read_text(encoding="utf-8")
 
     def report(self, reviews: list[ScriptReview]) -> str:
         """Genera el informe ejecutivo consolidado."""
@@ -60,7 +41,7 @@ class ReporterAgent:
             )
 
         messages = [
-            SystemMessage(content=self._SYSTEM_PROMPT),
+            SystemMessage(content=self._system_prompt),
             HumanMessage(
                 content=(
                     f"Consolida los siguientes {len(reviews)} reviews en un informe ejecutivo:\n\n"

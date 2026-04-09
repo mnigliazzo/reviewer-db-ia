@@ -3,7 +3,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .agents import ReporterAgent, ReviewerAgent, ValidatorAgent
+from .agents import CoherenceAgent, ReporterAgent, ReviewerAgent, ValidatorAgent
 from .graph import build_review_graph
 from .models import ScriptReview, SqlScript
 from .schema_memory import SchemaMemory
@@ -149,41 +149,70 @@ def main():
     logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
     model        = build_model(args.provider, args.base_url, args.model_agent, args.api_key)
     reviewer     = ReviewerAgent(model, SKILLS_BASE_PATH)
-    validator    = ValidatorAgent(model)
+    validator    = ValidatorAgent()
+    coherence    = CoherenceAgent(model)
     reporter     = ReporterAgent(model) if not args.skip_reporter else None
     review_graph = build_review_graph(reviewer, validator)
 
     all_reviews: list[ScriptReview] = []
-    current_migration = None
     memory = SchemaMemory()     # memoria acumulativa del esquema
 
+    # Agrupar scripts por migración manteniendo el orden
+    migrations: dict[str, list[SqlScript]] = {}
     for script in scripts:
-        if script.migration != current_migration:
-            current_migration = script.migration
-            logger.info(f"{'#' * 60}")
-            logger.info(f"MIGRATION: {current_migration}")
-            logger.info(f"{'#' * 60}")
+        migrations.setdefault(script.migration, []).append(script)
 
-        script_label = f"[ROLLBACK] {script.file.name}" if script.is_rollback else script.file.name
-        logger.info(f"Reviewing: {current_migration}/{script_label}")
+    for migration_id, migration_scripts in migrations.items():
+        logger.info(f"{'#' * 60}")
+        logger.info(f"MIGRATION: {migration_id}")
+        logger.info(f"{'#' * 60}")
 
-        try:
-            result = run_review_pipeline(script, review_graph, args.max_retries, memory)
-        except Exception as e:
-            logger.error(f"Failed to review {script_label}: {e}")
-            all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True))
-            continue
+        forward_scripts_data:  list[tuple[str, str]] = []
+        rollback_scripts_data: list[tuple[str, str]] = []
 
-        all_reviews.append(result)
+        for script in migration_scripts:
+            script_label = f"[ROLLBACK] {script.file.name}" if script.is_rollback else script.file.name
+            logger.info(f"Reviewing: {migration_id}/{script_label}")
 
-        logger.info(f"{'=' * 60}")
-        logger.info(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
-        logger.info(f"Skills usadas: {', '.join(result.skills_used) if result.skills_used else 'ninguna'}")
-        logger.info(f"{'=' * 60}")
-        logger.info(result.review)
+            try:
+                result = run_review_pipeline(script, review_graph, args.max_retries, memory)
+            except Exception as e:
+                logger.error(f"Failed to review {script_label}: {e}")
+                all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True, skills_used=[]))
+                continue
 
-        if result.has_critical:
-            logger.warning(f"Critical issues detected in {script_label}")
+            all_reviews.append(result)
+
+            logger.info(f"{'=' * 60}")
+            logger.info(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
+            logger.info(f"Skills usadas: {', '.join(result.skills_used) if result.skills_used else 'fallback (todas inyectadas)'}")
+            logger.info(f"{'=' * 60}")
+            logger.info(result.review)
+
+            if result.has_critical:
+                logger.warning(f"Critical issues detected in {script_label}")
+
+            # Acumular contenido para el análisis de coherencia
+            sql_content = script.file.read_text(encoding="utf-8")
+            if script.is_rollback:
+                rollback_scripts_data.append((script.file.name, sql_content))
+            else:
+                forward_scripts_data.append((script.file.name, sql_content))
+
+        # Análisis de coherencia forward ↔ rollback para esta migración
+        if forward_scripts_data:
+            try:
+                coherence_result = coherence.analyze(
+                    migration_id, forward_scripts_data, rollback_scripts_data
+                )
+                logger.info(f"{'~' * 60}")
+                logger.info(f"COHERENCIA: {migration_id}")
+                logger.info(f"{'~' * 60}")
+                logger.info(coherence_result.report)
+                if not coherence_result.approved:
+                    logger.warning(f"Rollback incompleto detectado en migración {migration_id}")
+            except Exception as e:
+                logger.error(f"CoherenceAgent failed for migration {migration_id}: {e}")
 
     # Informe ejecutivo final
     if reporter:

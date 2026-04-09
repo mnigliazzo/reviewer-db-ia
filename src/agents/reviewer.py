@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_ollama import ChatOllama
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from ..models import SqlScript
 from ..skill_middleware import build_skills_header, load_skills_from_disk, make_load_skill_tool
@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 ReviewResult = tuple[str, list[str]]
 
 MAX_TOOL_ROUNDS = 5     # máximo de rondas de tool calling antes de cortar
+
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+
+def _load_prompt(filename: str) -> str:
+    """Carga un prompt desde src/prompts/ y normaliza el trailing whitespace."""
+    return (_PROMPTS_DIR / filename).read_text(encoding="utf-8").rstrip() + "\n\n"
 
 
 class ReviewerAgent:
@@ -28,64 +35,23 @@ class ReviewerAgent:
          se hace fallback inyectando todas las skills directamente.
     """
 
-    _SYSTEM_PROMPT_BASE = (
-        "Eres un DBA experto en SQL Server y revisor de código T-SQL.\n"
-        "Tu tarea es revisar scripts SQL y dar feedback estructurado y accionable.\n\n"
-        "ANTES de revisar cualquier script, DEBES llamar a load_skill() para cargar\n"
-        "las guías de revisión que necesites. Las skills disponibles se listan abajo.\n\n"
-        "IMPORTANTE: Responde siempre en castellano.\n"
-        "IMPORTANTE: Nunca uses formato Markdown.\n"
-        "Usá MAYÚSCULAS para títulos de sección e indentación con espacios.\n\n"
-        "Formato de salida:\n\n"
-        "SKILLS UTILIZADAS: skill-name-1, skill-name-2\n\n"
-        "RESUMEN\n"
-        "  Seguridad:       X/10\n"
-        "  Rendimiento:     X/10\n"
-        "  Mantenibilidad:  X/10\n\n"
-        "HALLAZGOS\n\n"
-        "  [PRIORIDAD] [CATEGORIA] [skill-name]: Titulo del hallazgo\n"
-        "  Ubicacion: ...\n"
-        "  Riesgo: ...\n"
-        "  Recomendacion: ...\n\n"
-        "IMPORTANTE: No repitas el contenido de las skills en tu respuesta.\n"
-        "=== FIN DE INSTRUCCIONES ===\n\n"
-    )
-
-    _FALLBACK_PROMPT_BASE = (
-        "Eres un DBA experto en SQL Server y revisor de código T-SQL.\n"
-        "Tu tarea es revisar scripts SQL y dar feedback estructurado y accionable.\n"
-        "IMPORTANTE: Responde siempre en castellano.\n"
-        "IMPORTANTE: Nunca uses formato Markdown.\n"
-        "Usá MAYÚSCULAS para títulos de sección e indentación con espacios.\n\n"
-        "Formato de salida:\n\n"
-        "RESUMEN\n"
-        "  Seguridad:       X/10\n"
-        "  Rendimiento:     X/10\n"
-        "  Mantenibilidad:  X/10\n\n"
-        "HALLAZGOS\n\n"
-        "  [PRIORIDAD] [CATEGORIA]: Titulo del hallazgo\n"
-        "  Ubicacion: ...\n"
-        "  Riesgo: ...\n"
-        "  Recomendacion: ...\n\n"
-        "IMPORTANTE: No repitas el contenido de las skills en tu respuesta.\n"
-        "=== FIN DE INSTRUCCIONES ===\n\n"
-        "Guías de revisión:\n\n"
-    )
-
-    def __init__(self, model: ChatOllama, skills_base_path: Path):
+    def __init__(self, model: BaseChatModel, skills_base_path: Path):
         self._skills = load_skills_from_disk(str(skills_base_path))
         self._load_skill_tool = make_load_skill_tool(self._skills)
         self._model_with_tools = model.bind_tools([self._load_skill_tool])
         self._model = model
 
-        # Prompt con progressive disclosure (solo descripciones)
-        self._system_prompt = self._SYSTEM_PROMPT_BASE + build_skills_header(self._skills)
+        system_base   = _load_prompt("reviewer_system.md")
+        fallback_base = _load_prompt("reviewer_fallback.md")
+
+        # Prompt con progressive disclosure (solo descripciones de skills)
+        self._system_prompt = system_base + build_skills_header(self._skills)
 
         # Prompt de fallback con todas las skills inyectadas
         skills_content = "\n\n---\n\n".join(
             f"Skill: {s['name']}\n\n{s['content']}" for s in self._skills
         )
-        self._fallback_prompt = self._FALLBACK_PROMPT_BASE + skills_content
+        self._fallback_prompt = fallback_base + skills_content
 
     def review(
         self,
@@ -122,19 +88,29 @@ class ReviewerAgent:
         ]
         skills_used: list[str] = []
 
-        for round_num in range(MAX_TOOL_ROUNDS):
-            response = self._model_with_tools.invoke(messages)
-            messages.append(response)
+        try:
+            for round_num in range(MAX_TOOL_ROUNDS):
+                response = self._model_with_tools.invoke(messages)
+                messages.append(response)
 
-            if not getattr(response, "tool_calls", None):
-                break   # el modelo terminó de razonar
+                if not getattr(response, "tool_calls", None):
+                    break   # el modelo terminó de razonar
 
-            for tc in response.tool_calls:
-                tool_result = self._load_skill_tool.invoke(tc["args"])
-                skill_name = tc["args"].get("skill_name", "")
-                if skill_name and skill_name not in skills_used:
-                    skills_used.append(skill_name)
-                messages.append(ToolMessage(content=tool_result, tool_call_id=tc["id"]))
+                for tc in response.tool_calls:
+                    tool_result = self._load_skill_tool.invoke(tc["args"])
+                    skill_name = tc["args"].get("skill_name", "")
+                    if skill_name and skill_name not in skills_used:
+                        skills_used.append(skill_name)
+                    messages.append(ToolMessage(content=tool_result, tool_call_id=tc["id"]))
+        except Exception as e:
+            if "tool_use_failed" in str(e) or "Failed to call a function" in str(e):
+                logger.warning(
+                    f"El modelo no soporta tool calling correctamente ({type(e).__name__}). "
+                    "Aplicando fallback con skills inyectadas directamente."
+                )
+                skills_used = []   # fuerza el fallback de abajo
+            else:
+                raise
 
         # --- Fallback si el modelo no usó ningún tool ---
         if not skills_used:

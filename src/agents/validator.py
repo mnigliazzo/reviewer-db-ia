@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
 
 from ..models import SqlScript
 
 logger = logging.getLogger(__name__)
+
+_PLACEHOLDER = re.compile(r'^\.{2,}$|^-$|^n/a$|^$', re.IGNORECASE)
+_SCORE_PATTERN = re.compile(r'\b\d+(?:\.\d+)?/10\b')
+
+
+def _is_placeholder(text: str) -> bool:
+    return bool(_PLACEHOLDER.match(text.strip()))
 
 
 @dataclass
@@ -19,61 +24,45 @@ class ValidationResult:
 
 class ValidatorAgent:
     """
-    Agente validador: evalúa la calidad del review producido por el ReviewerAgent.
+    Valida la estructura del review producido por el ReviewerAgent.
 
-    Criterios de aprobación:
-      - Incluye scores de seguridad, rendimiento y mantenibilidad
-      - Tiene al menos un hallazgo con ubicación, riesgo y recomendación específica
-      - Las recomendaciones mencionan objetos SQL concretos (tablas, columnas, SPs)
-      - No es superficial ni genérico
-
-    Si el review no cumple, retorna feedback específico para que el
-    ReviewerAgent lo corrija en un reintento.
+    Criterios (todos estructurales, sin LLM):
+      1. El RESUMEN contiene al menos 3 puntuaciones X/10
+      2. Al menos un hallazgo tiene Ubicacion, Riesgo y Recomendacion con
+         contenido real (no '...', no vacío)
     """
 
-    _SYSTEM_PROMPT = (
-        "Eres un revisor de calidad de análisis de código SQL.\n"
-        "Tu tarea es evaluar si el review de código SQL producido por otro agente\n"
-        "es suficientemente completo, específico y accionable.\n"
-        "IMPORTANTE: Responde siempre en castellano.\n"
-        "IMPORTANTE: Nunca uses formato Markdown.\n\n"
-        "Criterios de aprobación (todos deben cumplirse):\n"
-        "  1. Incluye puntuaciones numéricas (X/10) para seguridad, rendimiento y mantenibilidad\n"
-        "  2. Tiene al menos un hallazgo con ubicacion, riesgo y recomendacion\n"
-        "  3. Las recomendaciones son específicas: mencionan objetos SQL concretos\n"
-        "     (nombres de tablas, columnas, stored procedures, índices, etc.)\n"
-        "  4. No es un review genérico que podría aplicarse a cualquier script\n\n"
-        "Responde UNICAMENTE con uno de estos dos formatos:\n\n"
-        "APROBADO\n\n"
-        "o bien:\n\n"
-        "RECHAZADO\n"
-        "Motivo: [explicacion concreta de qué falta o es incorrecto]\n"
-        "Correccion requerida: [instruccion precisa de qué debe mejorar el revisor]\n"
-    )
-
-    def __init__(self, model: ChatOllama):
-        self._model = model
-
     def validate(self, script: SqlScript, review: str) -> ValidationResult:
-        """
-        Valida el review de un script SQL.
-        Retorna ValidationResult con approved=True/False y feedback si fue rechazado.
-        """
-        messages = [
-            SystemMessage(content=self._SYSTEM_PROMPT),
-            HumanMessage(
-                content=(
-                    f"Evalúa el siguiente review del script '{script.file.name}'.\n\n"
-                    f"REVIEW A EVALUAR:\n{review}"
-                )
-            ),
-        ]
+        # Criterio 1: al menos 3 puntuaciones X/10 en el review
+        scores = _SCORE_PATTERN.findall(review)
+        if len(scores) < 3:
+            return ValidationResult(
+                approved=False,
+                feedback=(
+                    "Motivo: El RESUMEN no tiene las 3 puntuaciones X/10.\n"
+                    "Correccion requerida: Incluir RESUMEN con "
+                    "Seguridad: X/10, Rendimiento: X/10, Mantenibilidad: X/10."
+                ),
+            )
 
-        logger.debug(f"ValidatorAgent evaluando review de {script.file.name}")
-        response = self._model.invoke(messages).content.strip()
+        # Criterio 2: al menos un hallazgo con los 3 campos con contenido real
+        ubicacion = re.search(r'Ubicacion[:\s]+(.+)', review, re.IGNORECASE)
+        riesgo    = re.search(r'Riesgo[:\s]+(.+)',    review, re.IGNORECASE)
+        recomend  = re.search(r'Recomendacion[:\s]+(.+)', review, re.IGNORECASE)
 
-        if response.upper().startswith("APROBADO"):
-            return ValidationResult(approved=True, feedback="")
+        missing = []
+        for field, match in [("Ubicacion", ubicacion), ("Riesgo", riesgo), ("Recomendacion", recomend)]:
+            if not match or _is_placeholder(match.group(1)):
+                missing.append(field)
 
-        feedback = response.replace("RECHAZADO", "").strip()
-        return ValidationResult(approved=False, feedback=feedback)
+        if missing:
+            return ValidationResult(
+                approved=False,
+                feedback=(
+                    f"Motivo: Los campos {', '.join(missing)} están vacíos o son '...'.\n"
+                    "Correccion requerida: Completar esos campos con contenido real y específico."
+                ),
+            )
+
+        logger.debug(f"ValidatorAgent: review de {script.file.name} aprobado estructuralmente")
+        return ValidationResult(approved=True, feedback="")
