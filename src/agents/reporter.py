@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..models import ScriptReview
+from .reviewer import _load_prompt
 
 logger = logging.getLogger(__name__)
-
-_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
 class ReporterAgent:
@@ -24,7 +22,7 @@ class ReporterAgent:
 
     def __init__(self, model: BaseChatModel):
         self._model = model
-        self._system_prompt = (_PROMPTS_DIR / "reporter_system.md").read_text(encoding="utf-8")
+        self._system_prompt = _load_prompt("reporter_system.md")
 
     def report(self, reviews: list[ScriptReview]) -> str:
         """Genera el informe ejecutivo consolidado."""
@@ -35,8 +33,7 @@ class ReporterAgent:
         for i, sr in enumerate(reviews, 1):
             label = f"[ROLLBACK] {sr.script.file.name}" if sr.script.is_rollback else sr.script.file.name
             reviews_text += (
-                f"--- Script {i}: {sr.script.migration}/{label} "
-                f"(intentos: {sr.attempts}, critico: {'SI' if sr.has_critical else 'NO'}) ---\n"
+                f"--- Script {i}: {sr.script.migration}/{label} ---\n"
                 f"{sr.review}\n\n"
             )
 

@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import List, TypedDict
+from typing import TypedDict
 
 from langchain_core.tools import tool
 
@@ -11,11 +11,9 @@ class Skill(TypedDict):
     content: str
 
 
-def load_skills_from_disk(base_path: str) -> List[Skill]:
-    skills = []
+def load_skills_from_disk(base_path: str) -> list[Skill]:
+    skills: list[Skill] = []
     path = Path(base_path)
-
-    # Captura el bloque de frontmatter entre --- y el resto del contenido
     frontmatter_re = re.compile(r'^---\s*\n(.*?)\n---\s*\n(.*)', re.DOTALL | re.MULTILINE)
 
     for skill_dir in sorted(path.iterdir()):
@@ -43,12 +41,7 @@ def load_skills_from_disk(base_path: str) -> List[Skill]:
     return skills
 
 
-def build_skills_header(skills: List[Skill]) -> str:
-    """
-    Retorna solo nombre + descripción de cada skill.
-    Usado en el modo agente (progressive disclosure): el agente
-    ve las descripciones y decide cuáles cargar con load_skill().
-    """
+def build_skills_header(skills: list[Skill]) -> str:
     lines = ["## Skills disponibles\n"]
     for s in skills:
         lines.append(f"- {s['name']}: {s['description']}")
@@ -59,16 +52,7 @@ def build_skills_header(skills: List[Skill]) -> str:
     return "\n".join(lines)
 
 
-def make_load_skill_tool(skills: List[Skill]):
-    """
-    Fabrica el tool load_skill con las skills ya cargadas.
-    Retorna una función decorada con @tool lista para pasarle
-    a un agente de LangGraph/LangChain.
-
-    Uso futuro (modo agente):
-        tools = [make_load_skill_tool(skills)]
-        agent = create_react_agent(model, tools)
-    """
+def make_load_skill_tool(skills: list[Skill]):
     skill_map = {s["name"]: s["content"] for s in skills}
     available = ", ".join(skill_map.keys())
 

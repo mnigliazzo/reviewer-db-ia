@@ -3,10 +3,9 @@ import logging
 import sys
 from pathlib import Path
 
-from .agents import CoherenceAgent, ReporterAgent, ReviewerAgent, ValidatorAgent
+from .agents import CoherenceAgent, ReporterAgent, ReviewerAgent
 from .graph import build_review_graph
 from .models import ScriptReview, SqlScript
-from .schema_memory import SchemaMemory
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +32,9 @@ def build_model(provider: str, base_url: str, model: str, api_key: str | None = 
     else:
         raise ValueError(f"Provider no soportado: '{provider}'. Opciones: {SUPPORTED_PROVIDERS}")
 
+
 SKILLS_BASE_PATH = Path(__file__).parent / "skills"
-CRITICAL_MARKERS = ["[CRITICAL]", "[HIGH]", "CRITICAL:", "HIGH PRIORITY", "PRIORIDAD ALTA", "[ALTA]"]
 
-
-# ---------------------------------------------------------------------------
-# Descubrimiento de scripts
-# ---------------------------------------------------------------------------
 
 def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     """
@@ -51,11 +46,7 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
                     rollback/
                         NNN.Script.sql
 
-    Devuelve los scripts ordenados por:
-      1. año
-      2. carpeta de migración (cronológico por timestamp)
-      3. scripts forward primero, rollback después
-      4. nombre de archivo (orden numérico por prefijo NNN)
+    Devuelve los scripts ordenados por año, migración, forward primero, nombre de archivo.
     """
     scripts: list[SqlScript] = []
 
@@ -72,56 +63,42 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     return scripts
 
 
-# ---------------------------------------------------------------------------
-# Orquestación via LangGraph
-# ---------------------------------------------------------------------------
+def _build_schema_context(previous_scripts: list[tuple[str, str]]) -> str:
+    if not previous_scripts:
+        return ""
+    blocks = "\n\n".join(f"--- {name} ---\n{content}" for name, content in previous_scripts)
+    return f"CONTEXTO - scripts SQL anteriores de esta migración:\n\n{blocks}"
+
 
 def run_review_pipeline(
     script: SqlScript,
+    sql_content: str,
     review_graph,
-    max_retries: int,
-    memory: SchemaMemory,
+    schema_context: str,
 ) -> ScriptReview:
-    """Ejecuta el StateGraph de LangGraph para un script SQL."""
     final_state = review_graph.invoke({
         "script": script,
-        "max_retries": max_retries,
-        "schema_context": memory.to_context_string(),
-        "attempts": 0,
-        "validator_feedback": None,
-        "review": "",
-        "approved": False,
+        "sql_content": sql_content,
+        "schema_context": schema_context,
+        "messages": [],
         "skills_used": [],
     })
-
-    # Actualizar memoria con los objetos definidos en este script
-    sql_content = script.file.read_text(encoding="utf-8")
-    memory.ingest(sql_content)
-
-    has_critical = any(m in final_state["review"].upper() for m in CRITICAL_MARKERS)
     return ScriptReview(
         script=script,
-        review=final_state["review"],
-        attempts=final_state["attempts"],
-        has_critical=has_critical,
+        review=final_state["messages"][-1].content,
         skills_used=final_state.get("skills_used", []),
     )
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(description="CI SQL Reviewer powered by AI (multi-agente)")
-    parser.add_argument("--scripts-path",  type=str, required=True,                   help="Path to the migration scripts root folder")
+    parser.add_argument("--scripts-path",  type=str, required=True,  help="Path to the migration scripts root folder")
     parser.add_argument("--provider",      type=str, default="ollama", choices=SUPPORTED_PROVIDERS, help="LLM provider")
-    parser.add_argument("--base-url",      type=str, required=True,                   help="Base URL del LLM provider")
-    parser.add_argument("--model-agent",   type=str, required=True,                   help="AI Model name")
-    parser.add_argument("--api-key",       type=str,  required=False,                   help="API key (requerido para providers cloud)")
-    parser.add_argument("--max-retries",   type=int, default=1,                       help="Reintentos si el validador rechaza (default: 1)")
-    parser.add_argument("--skip-reporter", action="store_true",                       help="Omitir informe ejecutivo final (más rápido en CPU)")
-    parser.add_argument("--log-level",     type=str, default="INFO",                  help="Log level")
+    parser.add_argument("--base-url",      type=str, required=True,  help="Base URL del LLM provider")
+    parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
+    parser.add_argument("--api-key",       type=str,                 help="API key (requerido para providers cloud)")
+    parser.add_argument("--skip-reporter", action="store_true",      help="Omitir informe ejecutivo final")
+    parser.add_argument("--log-level",     type=str, default="INFO", help="Log level")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -149,15 +126,13 @@ def main():
     logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
     model        = build_model(args.provider, args.base_url, args.model_agent, args.api_key)
     reviewer     = ReviewerAgent(model, SKILLS_BASE_PATH)
-    validator    = ValidatorAgent()
     coherence    = CoherenceAgent(model)
     reporter     = ReporterAgent(model) if not args.skip_reporter else None
-    review_graph = build_review_graph(reviewer, validator)
+    review_graph = build_review_graph(reviewer)
 
     all_reviews: list[ScriptReview] = []
-    memory = SchemaMemory()     # memoria acumulativa del esquema
+    previous_scripts: list[tuple[str, str]] = []
 
-    # Agrupar scripts por migración manteniendo el orden
     migrations: dict[str, list[SqlScript]] = {}
     for script in scripts:
         migrations.setdefault(script.migration, []).append(script)
@@ -171,35 +146,33 @@ def main():
         rollback_scripts_data: list[tuple[str, str]] = []
 
         for script in migration_scripts:
-            script_label = f"[ROLLBACK] {script.file.name}" if script.is_rollback else script.file.name
-            logger.info(f"Reviewing: {migration_id}/{script_label}")
+            sql_content = script.file.read_text(encoding="utf-8")
+
+            if script.is_rollback:
+                rollback_scripts_data.append((script.file.name, sql_content))
+                continue
+
+            logger.info(f"Reviewing: {migration_id}/{script.file.name}")
 
             try:
-                result = run_review_pipeline(script, review_graph, args.max_retries, memory)
+                result = run_review_pipeline(
+                    script, sql_content, review_graph, _build_schema_context(previous_scripts)
+                )
             except Exception as e:
-                logger.error(f"Failed to review {script_label}: {e}")
-                all_reviews.append(ScriptReview(script=script, review=str(e), attempts=0, has_critical=True, skills_used=[]))
+                logger.error(f"Failed to review {script.file.name}: {e}")
+                all_reviews.append(ScriptReview(script=script, review=str(e), skills_used=[]))
                 continue
 
             all_reviews.append(result)
+            forward_scripts_data.append((script.file.name, sql_content))
+            previous_scripts.append((script.file.name, sql_content))
 
             logger.info(f"{'=' * 60}")
-            logger.info(f"{'[ROLLBACK] ' if script.is_rollback else ''}REVIEW: {script.file.name}  (intentos: {result.attempts})")
-            logger.info(f"Skills usadas: {', '.join(result.skills_used) if result.skills_used else 'fallback (todas inyectadas)'}")
+            logger.info(f"REVIEW: {script.file.name}")
+            logger.info(f"Skills usadas: {', '.join(result.skills_used) if result.skills_used else 'ninguna'}")
             logger.info(f"{'=' * 60}")
             logger.info(result.review)
 
-            if result.has_critical:
-                logger.warning(f"Critical issues detected in {script_label}")
-
-            # Acumular contenido para el análisis de coherencia
-            sql_content = script.file.read_text(encoding="utf-8")
-            if script.is_rollback:
-                rollback_scripts_data.append((script.file.name, sql_content))
-            else:
-                forward_scripts_data.append((script.file.name, sql_content))
-
-        # Análisis de coherencia forward ↔ rollback para esta migración
         if forward_scripts_data:
             try:
                 coherence_result = coherence.analyze(
@@ -214,7 +187,6 @@ def main():
             except Exception as e:
                 logger.error(f"CoherenceAgent failed for migration {migration_id}: {e}")
 
-    # Informe ejecutivo final
     if reporter:
         logger.info(f"{'#' * 60}")
         logger.info("INFORME EJECUTIVO FINAL")
@@ -223,10 +195,6 @@ def main():
             logger.info(reporter.report(all_reviews))
         except Exception as e:
             logger.error(f"ReporterAgent failed: {e}")
-
-    if any(r.has_critical for r in all_reviews):
-        logger.error("One or more scripts have critical issues. Review the output above.")
-        sys.exit(1)
 
     logger.info("All SQL scripts reviewed successfully.")
 

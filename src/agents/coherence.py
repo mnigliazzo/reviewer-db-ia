@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-logger = logging.getLogger(__name__)
+from .reviewer import _load_prompt
 
-_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,7 +33,7 @@ class CoherenceAgent:
 
     def __init__(self, model: BaseChatModel):
         self._model = model
-        self._system_prompt = (_PROMPTS_DIR / "coherence_system.md").read_text(encoding="utf-8")
+        self._system_prompt = _load_prompt("coherence_system.md")
 
     def analyze(
         self,
