@@ -84,6 +84,6 @@ class CoherenceAgent:
                     f"({len(forward_scripts)} forward, {len(rollback_scripts)} rollback)")
 
         response = self._model.invoke(messages).content
-        approved = "RESULTADO: INCOMPLETO" not in response.upper()
+        approved = "RESULTADO: COHERENTE" in response.upper()
 
         return CoherenceResult(report=response, approved=approved)

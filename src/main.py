@@ -135,6 +135,7 @@ def main():
 
     all_reviews: list[ScriptReview] = []
     previous_scripts: list[tuple[str, str]] = []
+    incoherent_migrations: list[str] = []
 
     migrations: dict[str, list[SqlScript]] = {}
     for script in scripts:
@@ -187,6 +188,7 @@ def main():
                 logger.info(coherence_result.report)
                 if not coherence_result.approved:
                     logger.warning(f"Rollback incompleto detectado en migración {migration_id}")
+                    incoherent_migrations.append(migration_id)
             except Exception as e:
                 logger.error(f"CoherenceAgent failed for migration {migration_id}: {e}")
 
@@ -198,6 +200,16 @@ def main():
             logger.info(reporter.report(all_reviews))
         except Exception as e:
             logger.error(f"ReporterAgent failed: {e}")
+
+    critical_scripts = [r.script.file.name for r in all_reviews if "[CRÍTICO]" in r.review]
+
+    if critical_scripts or incoherent_migrations:
+        if critical_scripts:
+            logger.error(f"Hallazgos CRÍTICOS en: {', '.join(critical_scripts)}")
+        if incoherent_migrations:
+            logger.error(f"Rollback INCOMPLETO en migraciones: {', '.join(incoherent_migrations)}")
+        logger.error("Pipeline finalizado con errores — revisar hallazgos antes de mergear.")
+        sys.exit(1)
 
     logger.info("All SQL scripts reviewed successfully.")
 
