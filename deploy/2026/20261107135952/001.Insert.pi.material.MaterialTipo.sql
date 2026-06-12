@@ -1,9 +1,0 @@
-USE [PI]
-GO
-
-IF @@SERVERNAME IN ('IN-SVR-SQLTDB01\DEV01', 'IN-SVR-SQLTDB03\QA01', 'IN-SVR-SQLTDB02\QA01')
-BEGIN
-   UPDATE [material].[MaterialTipo]
-   SET [Activo] = 1
-   WHERE [MaterialTipoId] = 2
-END

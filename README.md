@@ -1,0 +1,1 @@
+make run &> output.gemma4.$(date +%Y%m%d_%H%M%S)

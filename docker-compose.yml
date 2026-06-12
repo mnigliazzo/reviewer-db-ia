@@ -29,7 +29,7 @@ services:
       --model-agent ${MODEL_AGENTS}
       
     volumes:
-      - ${REVIEW_SCRIPTS_PATH:-./demo/deploy}:/app/scripts_review
+      - ${REVIEW_SCRIPTS_PATH}:/app/scripts_review
 
 
 volumes:
