@@ -55,8 +55,11 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
             for sql_file in sorted(migration_dir.glob("*.sql")):
                 scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=False))
 
-            rollback_dir = migration_dir / "rollback"
-            if rollback_dir.is_dir():
+            rollback_dir = next(
+                (d for d in migration_dir.iterdir() if d.is_dir() and d.name.lower() == "rollback"),
+                None,
+            )
+            if rollback_dir:
                 for sql_file in sorted(rollback_dir.glob("*.sql")):
                     scripts.append(SqlScript(migration_dir.name, sql_file, is_rollback=True))
 
