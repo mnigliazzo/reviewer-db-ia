@@ -58,6 +58,11 @@ HALLAZGOS
   Riesgo: ...
   Recomendacion: ...
 
+IMPORTANTE: PRIORIDAD debe ser exactamente una de estas palabras, sin abreviar, sin traducir, sin modificar:
+  CRÍTICO, ALTO, MEDIO, BAJO, MEJORA, OBSERVACION
+Ejemplos correctos: [CRÍTICO], [ALTO], [MEDIO], [BAJO]
+Ejemplos PROHIBIDOS: [CRI], [BJA], [MED], [CON], [ALTA], [BAJA], [MEDIA]
+
 Si no hay hallazgos válidos que reportar, escribir solamente:
 
 HALLAZGOS
