@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+import operator
+from typing import Annotated, Optional
 
 from langchain_core.messages import ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 from typing_extensions import TypedDict
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
@@ -13,20 +15,20 @@ from .models import ScriptReview, parse_review_text
 logger = logging.getLogger(__name__)
 
 
+def _bool_or(a: bool, b: bool) -> bool:
+    return a or b
+
+
 # ── Per-migration state ────────────────────────────────────────────────────────
 
 class MigrationState(TypedDict):
     migration_id: str
     schema_context: str
-    pending_scripts: list           # [(SqlScript, sql_content), ...]
-    forward_scripts_data: list      # [(name, content), ...] acumulado para coherence
-    rollback_scripts_data: list     # [(name, content), ...] pre-cargado, solo para coherence
-    reviews: list                   # [ScriptReview, ...]
-    has_critical: bool
-    current_script: Any
-    current_sql: str
-    messages: list
-    skills_used: list[str]
+    scripts_to_review: list                               # [(SqlScript, sql_content), ...]
+    rollback_scripts_data: list                           # pre-cargado, solo para coherence
+    reviews: Annotated[list, operator.add]                # mergeado de workers paralelos
+    forward_scripts_data: Annotated[list, operator.add]   # mergeado de workers paralelos
+    has_critical: Annotated[bool, _bool_or]               # OR de todos los workers
     coherence_report: str
     coherence_approved: bool
     mini_report: str
@@ -37,65 +39,64 @@ def build_migration_graph(
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
 ):
-    def pick_next_script(state: MigrationState) -> dict:
-        pending = list(state.get("pending_scripts", []))
-        if not pending:
-            return {"current_script": None, "pending_scripts": []}
-        script, sql_content = pending.pop(0)
-        logger.info(f"Reviewing: {state['migration_id']}/{script.file.name}")
-        return {
-            "pending_scripts": pending,
-            "current_script": script,
-            "current_sql": sql_content,
-            "messages": reviewer.build_messages(script, sql_content, state.get("schema_context", "")),
-            "skills_used": [],
-        }
+    def fan_out_fn(state: MigrationState):
+        scripts = state.get("scripts_to_review", [])
+        if not scripts:
+            return "coherence"
+        return [
+            Send("review_script", {
+                "migration_id": state["migration_id"],
+                "schema_context": state["schema_context"],
+                "script": script,
+                "sql_content": sql_content,
+            })
+            for script, sql_content in scripts
+        ]
 
-    def reviewer_node(state: MigrationState) -> dict:
-        response = reviewer.model_with_tools.invoke(state["messages"])
-        return {"messages": state["messages"] + [response]}
+    def review_script_node(worker: dict) -> dict:
+        """Worker paralelo: maneja un script completo con su loop de tool calls."""
+        script = worker["script"]
+        sql_content = worker["sql_content"]
 
-    def tool_node(state: MigrationState) -> dict:
-        last = state["messages"][-1]
-        new_skills = list(state.get("skills_used", []))
-        tool_messages = []
-        for tc in last.tool_calls:
-            result = reviewer.load_skill_tool.invoke(tc["args"])
-            name = tc["args"].get("skill_name", "")
-            if name and name not in new_skills:
-                new_skills.append(name)
-            tool_messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
-        return {
-            "messages": state["messages"] + tool_messages,
-            "skills_used": new_skills,
-        }
+        messages = reviewer.build_messages(script, sql_content, worker.get("schema_context", ""))
+        skills_used: list[str] = []
 
-    def save_review(state: MigrationState) -> dict:
-        script = state["current_script"]
-        review_text = state["messages"][-1].content
-        skills = state.get("skills_used", [])
+        logger.info(f"Reviewing: {worker['migration_id']}/{script.file.name}")
 
-        result = parse_review_text(review_text, skills)
+        while True:
+            response = reviewer.model_with_tools.invoke(messages)
+            messages.append(response)
+            if not getattr(response, "tool_calls", None):
+                break
+            for tc in response.tool_calls:
+                tool_result = reviewer.load_skill_tool.invoke(tc["args"])
+                name = tc["args"].get("skill_name", "")
+                if name and name not in skills_used:
+                    skills_used.append(name)
+                messages.append(ToolMessage(content=tool_result, tool_call_id=tc["id"]))
+
+        review_text = messages[-1].content
+        result = parse_review_text(review_text, skills_used)
         sr = ScriptReview(script=script, result=result)
-        reviews = list(state.get("reviews", []))
-        reviews.append(sr)
-
-        forward_data = list(state.get("forward_scripts_data", []))
-        forward_data.append((script.file.name, state["current_sql"]))
-
-        has_critical = state.get("has_critical", False) or result.has_critical
 
         logger.info(f"{'=' * 60}")
         logger.info(f"REVIEW: {script.file.name}")
-        logger.info(f"Skills usadas: {', '.join(skills) if skills else 'ninguna'}")
+        logger.info(f"Skills usadas: {', '.join(skills_used) if skills_used else 'ninguna'}")
         logger.info(f"{'=' * 60}")
         logger.info(review_text)
 
         return {
-            "reviews": reviews,
-            "forward_scripts_data": forward_data,
-            "has_critical": has_critical,
+            "reviews": [sr],
+            "forward_scripts_data": [(script.file.name, sql_content)],
+            "has_critical": result.has_critical,
         }
+
+    def gather_node(state: MigrationState) -> dict:
+        """Fan-in: corre una vez después de que todos los workers terminan."""
+        return {}
+
+    def route_after_gather(state: MigrationState) -> str:
+        return "escalate" if state.get("has_critical") else "coherence"
 
     def coherence_node(state: MigrationState) -> dict:
         result = coherence_agent.analyze(
@@ -109,10 +110,7 @@ def build_migration_graph(
         logger.info(result.report)
         if not result.approved:
             logger.warning(f"Rollback incompleto detectado en migración {state['migration_id']}")
-        return {
-            "coherence_report": result.report,
-            "coherence_approved": result.approved,
-        }
+        return {"coherence_report": result.report, "coherence_approved": result.approved}
 
     def mini_reporter_node(state: MigrationState) -> dict:
         report = mini_reporter_agent.report(
@@ -132,38 +130,24 @@ def build_migration_graph(
         logger.error(f"ESCALATE — Hallazgos CRÍTICOS en {state['migration_id']}: {', '.join(critical)}")
         return {}
 
-    def route_after_pick(state: MigrationState) -> str:
-        if state.get("current_script") is not None:
-            return "reviewer"
-        return "escalate" if state.get("has_critical") else "coherence"
-
-    def route_after_reviewer(state: MigrationState) -> str:
-        return "tools" if getattr(state["messages"][-1], "tool_calls", None) else "save_review"
-
     graph = StateGraph(MigrationState)
-    graph.add_node("pick_next", pick_next_script)
-    graph.add_node("reviewer", reviewer_node)
-    graph.add_node("tools", tool_node)
-    graph.add_node("save_review", save_review)
+    graph.add_node("fan_out", lambda s: {})
+    graph.add_node("review_script", review_script_node)
+    graph.add_node("gather", gather_node)
     graph.add_node("coherence", coherence_node)
     graph.add_node("mini_reporter", mini_reporter_node)
     graph.add_node("escalate", escalate_node)
 
-    graph.add_edge(START, "pick_next")
-    graph.add_conditional_edges("pick_next", route_after_pick, {
-        "reviewer": "reviewer",
-        "coherence": "coherence",
+    graph.add_edge(START, "fan_out")
+    graph.add_conditional_edges("fan_out", fan_out_fn, ["review_script", "coherence"])
+    graph.add_edge("review_script", "gather")
+    graph.add_conditional_edges("gather", route_after_gather, {
         "escalate": "escalate",
+        "coherence": "coherence",
     })
-    graph.add_conditional_edges("reviewer", route_after_reviewer, {
-        "tools": "tools",
-        "save_review": "save_review",
-    })
-    graph.add_edge("tools", "reviewer")
-    graph.add_edge("save_review", "pick_next")
+    graph.add_edge("escalate", END)
     graph.add_edge("coherence", "mini_reporter")
     graph.add_edge("mini_reporter", END)
-    graph.add_edge("escalate", END)
 
     return graph.compile()
 
@@ -171,11 +155,11 @@ def build_migration_graph(
 # ── Pipeline state (todas las migraciones) ────────────────────────────────────
 
 class PipelineState(TypedDict):
-    migrations_queue: list          # [(migration_id, forward_scripts, rollback_data), ...]
-    previous_scripts: list          # [(name, content), ...] acumulado entre migraciones
-    all_reviews: list               # [ScriptReview, ...] acumulado
-    migration_reports: list         # [str, ...] mini-informes acumulados
-    incoherent_migrations: list     # [str, ...] IDs de migraciones con rollback incompleto
+    migrations_queue: list
+    previous_scripts: list
+    all_reviews: list
+    migration_reports: list
+    incoherent_migrations: list
     has_critical: bool
     final_report: str
 
@@ -206,15 +190,11 @@ def build_pipeline_graph(
         migration_result = migration_graph.invoke({
             "migration_id": migration_id,
             "schema_context": _build_schema_context(state.get("previous_scripts", [])),
-            "pending_scripts": forward_scripts,
-            "forward_scripts_data": [],
+            "scripts_to_review": forward_scripts,
             "rollback_scripts_data": rollback_scripts_data,
             "reviews": [],
+            "forward_scripts_data": [],
             "has_critical": False,
-            "current_script": None,
-            "current_sql": "",
-            "messages": [],
-            "skills_used": [],
             "coherence_report": "",
             "coherence_approved": True,
             "mini_report": "",
