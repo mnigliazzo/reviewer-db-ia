@@ -131,7 +131,7 @@ def main():
 
     if result.get("has_critical") or result.get("incoherent_migrations"):
         if result.get("has_critical"):
-            critical = [r.script.file.name for r in result["all_reviews"] if "[CRÍTICO]" in r.review]
+            critical = [r.script.file.name for r in result["all_reviews"] if r.result.has_critical]
             logger.error(f"Hallazgos CRÍTICOS en: {', '.join(critical)}")
         if result.get("incoherent_migrations"):
             logger.error(f"Rollback INCOMPLETO en migraciones: {', '.join(result['incoherent_migrations'])}")

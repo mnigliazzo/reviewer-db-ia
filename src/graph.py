@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
-from .models import ScriptReview
+from .models import ScriptReview, parse_review_text
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +75,15 @@ def build_migration_graph(
         review_text = state["messages"][-1].content
         skills = state.get("skills_used", [])
 
-        sr = ScriptReview(script=script, review=review_text, skills_used=skills)
+        result = parse_review_text(review_text, skills)
+        sr = ScriptReview(script=script, result=result)
         reviews = list(state.get("reviews", []))
         reviews.append(sr)
 
         forward_data = list(state.get("forward_scripts_data", []))
         forward_data.append((script.file.name, state["current_sql"]))
 
-        has_critical = state.get("has_critical", False) or "[CRÍTICO]" in review_text
+        has_critical = state.get("has_critical", False) or result.has_critical
 
         logger.info(f"{'=' * 60}")
         logger.info(f"REVIEW: {script.file.name}")
@@ -127,7 +128,7 @@ def build_migration_graph(
         return {"mini_report": report}
 
     def escalate_node(state: MigrationState) -> dict:
-        critical = [r.script.file.name for r in state.get("reviews", []) if "[CRÍTICO]" in r.review]
+        critical = [r.script.file.name for r in state.get("reviews", []) if r.result.has_critical]
         logger.error(f"ESCALATE — Hallazgos CRÍTICOS en {state['migration_id']}: {', '.join(critical)}")
         return {}
 

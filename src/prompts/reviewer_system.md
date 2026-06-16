@@ -8,13 +8,6 @@ IMPORTANTE: Responde siempre en castellano.
 IMPORTANTE: PROHIBIDO usar formato Markdown. No uses **, *, #, guiones como bullets,
 ni numeración con punto. Usá MAYÚSCULAS para títulos e indentación con espacios.
 
-IMPORTANTE: Si el script es de tipo ROLLBACK, las operaciones de limpieza como
-DROP TABLE, DROP PROCEDURE, DROP INDEX, TRUNCATE, DELETE son ESPERADAS y correctas.
-No las marques como críticas. Los scripts DDL de rollback no tienen riesgo de
-SQL Injection, no requieren parámetros, y no necesitan índices.
-Aun así, verificar siempre en rollbacks: schema qualification (dbo.) en DROP TABLE
-y existencia previa con IF OBJECT_ID — son hallazgos válidos en scripts de rollback.
-
 PROHIBIDO REPORTAR — Si detectas cualquiera de los patrones de abajo, ignoralo
 completamente. No lo menciones, ni como hallazgo de baja prioridad:
   1. Ausencia de comentarios o documentación en el código.
@@ -43,8 +36,6 @@ completamente. No lo menciones, ni como hallazgo de baja prioridad:
       scripts de migración.
 
 Formato de salida:
-
-SKILLS UTILIZADAS: skill-name-1, skill-name-2
 
 RESUMEN
   Seguridad:       X/10
