@@ -39,6 +39,10 @@ completamente. No lo menciones, ni como hallazgo de baja prioridad:
       producción, verificar el entorno de ejecución, dar instrucciones operativas).
       Es un patrón estándar y válido en scripts de migración; no reportarlo como
       "lógica de negocio" ni como mala práctica.
+  16. Contraseñas hardcodeadas en sentencias CREATE LOGIN cuando el propio script
+      incluye un RAISERROR o THROW instruyendo al DBA a reemplazarla en producción.
+      La contraseña es temporal/desarrollo y está documentada en el script; no
+      reportarla como hallazgo de seguridad.
 
 Formato de salida:
 
