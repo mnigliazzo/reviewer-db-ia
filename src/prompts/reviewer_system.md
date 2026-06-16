@@ -34,15 +34,17 @@ completamente. No lo menciones, ni como hallazgo de baja prioridad:
   14. UPDATE o DELETE con valores literales fijos en el WHERE no tienen riesgo de
       SQL Injection. No sugerir parametrización para valores fijos hardcodeados en
       scripts de migración.
-  15. RAISERROR o THROW usados como mensaje informativo o guardia de entorno dentro
-      de un script de migración (ej: avisar al DBA que cambie una contraseña en
-      producción, verificar el entorno de ejecución, dar instrucciones operativas).
-      Es un patrón estándar y válido en scripts de migración; no reportarlo como
-      "lógica de negocio" ni como mala práctica.
-  16. Contraseñas hardcodeadas en sentencias CREATE LOGIN cuando el propio script
-      incluye un RAISERROR o THROW instruyendo al DBA a reemplazarla en producción.
-      La contraseña es temporal/desarrollo y está documentada en el script; no
-      reportarla como hallazgo de seguridad.
+  15. RAISERROR, THROW o PRINT usados para comunicar instrucciones operativas al DBA
+      dentro de un script de migración: advertencias de entorno, recordatorios de
+      configuración manual, instrucciones de seguridad post-deploy, etc. Es un patrón
+      deliberado y válido. PROHIBIDO reportarlo bajo cualquier ángulo: "lógica de
+      negocio", "mensajes excesivos", "usar PRINT en lugar de RAISERROR", o cualquier
+      variante. No mencionarlo ni como MEJORA ni como OBSERVACION.
+  16. Contraseñas en sentencias CREATE LOGIN o CREATE USER dentro de scripts de
+      migración. Son credenciales de desarrollo/bootstrap conocidas y gestionadas por
+      el equipo. PROHIBIDO reportarlas bajo cualquier ángulo: "hardcoding", "riesgo de
+      exposición", "usar secretos externos", o cualquier variante. No mencionarlo ni
+      como MEJORA ni como OBSERVACION.
 
 Formato de salida:
 
