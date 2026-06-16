@@ -34,6 +34,11 @@ completamente. No lo menciones, ni como hallazgo de baja prioridad:
   14. UPDATE o DELETE con valores literales fijos en el WHERE no tienen riesgo de
       SQL Injection. No sugerir parametrización para valores fijos hardcodeados en
       scripts de migración.
+  15. RAISERROR o THROW usados como mensaje informativo o guardia de entorno dentro
+      de un script de migración (ej: avisar al DBA que cambie una contraseña en
+      producción, verificar el entorno de ejecución, dar instrucciones operativas).
+      Es un patrón estándar y válido en scripts de migración; no reportarlo como
+      "lógica de negocio" ni como mala práctica.
 
 Formato de salida:
 

@@ -71,8 +71,10 @@ def main():
     parser.add_argument("--base-url",      type=str, required=True,  help="Base URL del LLM provider")
     parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
     parser.add_argument("--api-key",       type=str,                 help="API key (requerido para providers cloud)")
-    parser.add_argument("--skip-reporter", action="store_true",      help="Omitir informe ejecutivo final")
-    parser.add_argument("--log-level",     type=str, default="INFO", help="Log level")
+    parser.add_argument("--skip-reporter",      action="store_true",  help="Omitir informe ejecutivo final")
+    parser.add_argument("--max-tool-rounds",    type=int, default=0, help="Max rondas de tool calls por script (0 = ilimitado)")
+    parser.add_argument("--max-schema-scripts", type=int, default=0, help="Max scripts previos en el schema context (0 = ilimitado)")
+    parser.add_argument("--log-level",          type=str, default="INFO", help="Log level")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -100,10 +102,12 @@ def main():
     logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
     model          = build_model(args.provider, args.base_url, args.model_agent, args.api_key)
     pipeline_graph = build_pipeline_graph(
-        reviewer        = ReviewerAgent(model, SKILLS_BASE_PATH),
-        coherence_agent = CoherenceAgent(model),
+        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH),
+        coherence_agent     = CoherenceAgent(model),
         mini_reporter_agent = MiniReporterAgent(model),
-        reporter_agent  = ReporterAgent(model) if not args.skip_reporter else None,
+        reporter_agent      = ReporterAgent(model) if not args.skip_reporter else None,
+        max_tool_rounds     = args.max_tool_rounds,
+        max_schema_scripts  = args.max_schema_scripts,
     )
 
     migrations: dict[str, list[SqlScript]] = {}

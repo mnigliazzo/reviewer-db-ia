@@ -38,6 +38,7 @@ def build_migration_graph(
     reviewer: ReviewerAgent,
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
+    max_tool_rounds: int = 0,
 ):
     def fan_out_fn(state: MigrationState):
         scripts = state.get("scripts_to_review", [])
@@ -63,7 +64,9 @@ def build_migration_graph(
 
         logger.info(f"Reviewing: {worker['migration_id']}/{script.file.name}")
 
-        while True:
+        rounds = 0
+        while max_tool_rounds == 0 or rounds < max_tool_rounds:
+            rounds += 1
             response = reviewer.model_with_tools.invoke(messages)
             messages.append(response)
             if not getattr(response, "tool_calls", None):
@@ -164,10 +167,11 @@ class PipelineState(TypedDict):
     final_report: str
 
 
-def _build_schema_context(previous_scripts: list[tuple[str, str]]) -> str:
+def _build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: int = 10) -> str:
     if not previous_scripts:
         return ""
-    blocks = "\n\n".join(f"--- {name} ---\n{content}" for name, content in previous_scripts)
+    recent = previous_scripts[-max_scripts:] if max_scripts > 0 else previous_scripts
+    blocks = "\n\n".join(f"--- {name} ---\n{content}" for name, content in recent)
     return f"CONTEXTO - scripts SQL anteriores de esta migración:\n\n{blocks}"
 
 
@@ -176,8 +180,10 @@ def build_pipeline_graph(
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
     reporter_agent: Optional[ReporterAgent] = None,
+    max_tool_rounds: int = 0,
+    max_schema_scripts: int = 0,
 ):
-    migration_graph = build_migration_graph(reviewer, coherence_agent, mini_reporter_agent)
+    migration_graph = build_migration_graph(reviewer, coherence_agent, mini_reporter_agent, max_tool_rounds)
 
     def run_migration_node(state: PipelineState) -> dict:
         queue = list(state["migrations_queue"])
@@ -189,7 +195,7 @@ def build_pipeline_graph(
 
         migration_result = migration_graph.invoke({
             "migration_id": migration_id,
-            "schema_context": _build_schema_context(state.get("previous_scripts", [])),
+            "schema_context": _build_schema_context(state.get("previous_scripts", []), max_schema_scripts),
             "scripts_to_review": forward_scripts,
             "rollback_scripts_data": rollback_scripts_data,
             "reviews": [],

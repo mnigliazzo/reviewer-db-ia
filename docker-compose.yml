@@ -27,7 +27,9 @@ services:
       --provider ${PROVIDER:-ollama}
       --base-url ${MODEL_BASE_URL}
       --model-agent ${MODEL_AGENTS}
-      
+      --max-tool-rounds ${REVIEWER_MAX_TOOL_ROUNDS:-0}
+      --max-schema-scripts ${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}
+
     volumes:
       - ${REVIEW_SCRIPTS_PATH}:/app/scripts_review
 
