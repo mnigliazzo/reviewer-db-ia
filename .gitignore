@@ -1,3 +1,7 @@
 deploy
 .env*
 output.gemma4*
+tmp/*
+src/__pycache__/
+src/agents/__pycache__/
+src/reviewer_db_ia.egg-info/
