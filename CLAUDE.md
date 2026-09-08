@@ -98,16 +98,17 @@ Python >= 3.12; runtime deps (`langchain`, `langgraph`, `langchain-ollama`,
 name; forward and rollback files are read into memory up front and passed as
 `(name, content)` tuples.
 
-### Two nested LangGraph graphs (`src/graph.py`)
+### One LangGraph graph, driven by a plain loop (`src/graph.py` + `src/main.py`)
 
-**Pipeline graph** (`PipelineState`) — processes migrations **sequentially**. The
-`run_migration` node pops one migration off `migrations_queue`, runs the migration
-graph on it, then conditionally loops back to itself until the queue is empty, then
-goes to `global_reporter`. Forward scripts already reviewed accumulate in
-`previous_scripts` and are fed to later migrations as `schema_context`
-(`_build_schema_context`, capped by `--max-schema-scripts`).
+**Migration sweep** — `main.review_migrations` iterates the migrations **in order**
+(plain `for`, no graph), calling `migration_graph.invoke(new_migration_state(...))` once
+per migration. Forward scripts already reviewed accumulate in `previous_scripts` and are
+fed to later migrations as `schema_context` (`build_schema_context`, capped by
+`--max-schema-scripts`). After the loop it runs `ReporterAgent` once (unless
+`--skip-reporter`). It returns `(all_reviews, incoherent_migrations)` for `decide_exit` /
+SARIF.
 
-**Migration graph** (`MigrationState`) — per migration:
+**Migration graph** (`MigrationState`, the only compiled graph) — per migration:
 `fan_out` → parallel `review_script` workers (one `Send` per forward script) → `gather`
 fan-in → route to `escalate` if any worker set `has_critical`, else `coherence` →
 `mini_reporter`. Parallel-worker state is merged with `operator.add` / `operator.or_`
@@ -122,8 +123,9 @@ or coherence check (LLM error, schema-`ValidationError`) propagates out of the n
 aborts the whole run with a non-zero exit — no synthetic `_REVIEW_FALLO` finding, no
 fail-safe not-approved. A genuine `INCOMPLETO` veredicto still flows through normally
 (`coherence_approved=False` → exit 1 with a clean message); only *exceptions* now crash.
-Only `mini_reporter_node` / `global_reporter_node` still swallow exceptions into a
-placeholder string — the reports are informational and never gate the merge.
+The two exceptions: `mini_reporter_node` and the `ReporterAgent` call in
+`review_migrations` swallow errors into a placeholder — the reports are informational and
+never gate the merge.
 
 ### Agents (`src/agents/`)
 
@@ -203,8 +205,9 @@ output — no custom JSON.
 
 `--fail-on` (CSV of prioridades, default `CRÍTICO`) → any finding with a matching
 prioridad, **or** any incomplete rollback, → exit 1. `decide_exit` is a pure function
-(unit-tested). The graph's `has_critical` still only routes `escalate` (an early-exit
-optimization); it does not decide the exit code.
+(unit-tested). `MigrationState.has_critical` only routes `escalate` inside the migration
+graph (an early-exit optimization); it does not decide the exit code and is not read
+outside the graph.
 
 ### Providers (`src/llm.py`)
 

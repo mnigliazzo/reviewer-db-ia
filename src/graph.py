@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from typing_extensions import TypedDict
 
-from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
+from .agents import CoherenceAgent, MiniReporterAgent, ReviewerAgent
 from .logging_utils import banner
 from .models import ScriptReview
 
@@ -135,19 +135,9 @@ def build_migration_graph(
     return graph.compile()
 
 
-# ── Pipeline state (todas las migraciones) ────────────────────────────────────
-
-class PipelineState(TypedDict):
-    migrations_queue: list
-    previous_scripts: list
-    all_reviews: list
-    migration_reports: list
-    incoherent_migrations: list
-    has_critical: bool
-    final_report: str
-
-
-def _build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: int = 10) -> str:
+def build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: int = 10) -> str:
+    """Contexto para el reviewer: los scripts forward ya revisados de migraciones
+    anteriores (los últimos ``max_scripts``; ``0`` = todos)."""
     if not previous_scripts:
         return ""
     recent = previous_scripts[-max_scripts:] if max_scripts > 0 else previous_scripts
@@ -155,80 +145,17 @@ def _build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: 
     return f"CONTEXTO - scripts SQL anteriores de esta migración:\n\n{blocks}"
 
 
-def build_pipeline_graph(
-    reviewer: ReviewerAgent,
-    coherence_agent: CoherenceAgent,
-    mini_reporter_agent: MiniReporterAgent,
-    reporter_agent: ReporterAgent | None = None,
-    max_schema_scripts: int = 0,
-):
-    migration_graph = build_migration_graph(reviewer, coherence_agent, mini_reporter_agent)
-
-    def run_migration_node(state: PipelineState) -> dict:
-        queue = list(state["migrations_queue"])
-        migration_id, forward_scripts, rollback_scripts_data = queue.pop(0)
-
-        banner(logger, f"MIGRATION: {migration_id}", "#")
-
-        migration_result = migration_graph.invoke({
-            "migration_id": migration_id,
-            "schema_context": _build_schema_context(state.get("previous_scripts", []), max_schema_scripts),
-            "scripts_to_review": forward_scripts,
-            "rollback_scripts_data": rollback_scripts_data,
-            "reviews": [],
-            "forward_scripts_data": [],
-            "has_critical": False,
-            "coherence_report": "",
-            "coherence_approved": True,
-            "mini_report": "",
-        })
-
-        all_reviews = list(state.get("all_reviews", [])) + migration_result.get("reviews", [])
-        previous_scripts = list(state.get("previous_scripts", [])) + migration_result.get("forward_scripts_data", [])
-
-        migration_reports = list(state.get("migration_reports", []))
-        if migration_result.get("mini_report"):
-            migration_reports.append(migration_result["mini_report"])
-
-        incoherent = list(state.get("incoherent_migrations", []))
-        if not migration_result.get("coherence_approved", True):
-            incoherent.append(migration_id)
-
-        has_critical = state.get("has_critical", False) or migration_result.get("has_critical", False)
-
-        return {
-            "migrations_queue": queue,
-            "all_reviews": all_reviews,
-            "previous_scripts": previous_scripts,
-            "migration_reports": migration_reports,
-            "incoherent_migrations": incoherent,
-            "has_critical": has_critical,
-        }
-
-    def global_reporter_node(state: PipelineState) -> dict:
-        if reporter_agent is None:
-            return {"final_report": ""}
-        banner(logger, "INFORME EJECUTIVO FINAL", "#")
-        try:
-            report = reporter_agent.report(state.get("migration_reports", []))
-        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
-            logger.exception("El informe ejecutivo final falló")
-            report = "(No se pudo generar el informe ejecutivo final.)"
-        logger.info(report)
-        return {"final_report": report}
-
-    def route_after_migration(state: PipelineState) -> str:
-        return "run_migration" if state.get("migrations_queue") else "global_reporter"
-
-    pipeline = StateGraph(PipelineState)
-    pipeline.add_node("run_migration", run_migration_node)
-    pipeline.add_node("global_reporter", global_reporter_node)
-
-    pipeline.add_edge(START, "run_migration")
-    pipeline.add_conditional_edges("run_migration", route_after_migration, {
-        "run_migration": "run_migration",
-        "global_reporter": "global_reporter",
-    })
-    pipeline.add_edge("global_reporter", END)
-
-    return pipeline.compile()
+def new_migration_state(migration_id: str, schema_context: str, forward_scripts: list, rollback_data: list) -> dict:
+    """Estado inicial para una corrida de ``build_migration_graph().invoke()``."""
+    return {
+        "migration_id": migration_id,
+        "schema_context": schema_context,
+        "scripts_to_review": forward_scripts,
+        "rollback_scripts_data": rollback_data,
+        "reviews": [],
+        "forward_scripts_data": [],
+        "has_critical": False,
+        "coherence_report": "",
+        "coherence_approved": True,
+        "mini_report": "",
+    }
