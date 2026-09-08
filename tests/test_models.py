@@ -1,6 +1,3 @@
-import pytest
-from pydantic import ValidationError
-
 from src.models import Finding, ReviewOutput, ReviewResult, format_review
 
 
@@ -10,26 +7,38 @@ def _finding(**kw):
     return Finding(**base)
 
 
-def test_prioridad_must_be_in_the_literal_set():
-    with pytest.raises(ValidationError):
-        _finding(prioridad="ALTA")   # no existe, la válida es ALTO
+def test_prioridad_normaliza_variantes():
+    assert _finding(prioridad="ALTA").prioridad == "ALTO"
+    assert _finding(prioridad="media").prioridad == "MEDIO"
+    assert _finding(prioridad="HIGH").prioridad == "ALTO"
     assert _finding(prioridad="CRÍTICO").prioridad == "CRÍTICO"
+    # cualquier cosa desconocida -> OBSERVACION, sin romper
+    assert _finding(prioridad="wat").prioridad == "OBSERVACION"
 
 
-def test_scores_bounded_0_10():
-    ReviewOutput(seguridad=0, rendimiento=10, mantenibilidad=5)
-    with pytest.raises(ValidationError):
-        ReviewOutput(seguridad=11, rendimiento=5, mantenibilidad=5)
-    with pytest.raises(ValidationError):
-        ReviewOutput(seguridad=-1, rendimiento=5, mantenibilidad=5)
+def test_finding_campos_opcionales():
+    # el modelo devolvió un hallazgo a medias: no debe explotar
+    f = Finding.model_validate({"prioridad": "MEDIO", "categoria": ""})
+    assert f.skill == "-"
+    assert f.titulo == ""
+    assert f.is_empty is True
 
 
-def test_from_output_merges_skills():
-    out = ReviewOutput(seguridad=7, rendimiento=7, mantenibilidad=7, hallazgos=[_finding()])
+def test_scores_se_clampean():
+    assert ReviewOutput(seguridad=11, rendimiento=-3, mantenibilidad=5).seguridad == 10
+    assert ReviewOutput(seguridad=11, rendimiento=-3, mantenibilidad=5).rendimiento == 0
+    assert ReviewOutput(seguridad="8", rendimiento="x", mantenibilidad=7).rendimiento == 5  # no numérico -> 5
+
+
+def test_from_output_merges_skills_y_descarta_vacios():
+    out = ReviewOutput(
+        seguridad=7, rendimiento=7, mantenibilidad=7,
+        hallazgos=[_finding(), Finding.model_validate({"prioridad": "BAJO"})],  # 2do vacío
+    )
     res = ReviewResult.from_output(out, ["sql-code-review", "sql-optimization"])
     assert res.skills_utilizadas == ["sql-code-review", "sql-optimization"]
     assert res.seguridad == 7
-    assert len(res.hallazgos) == 1
+    assert len(res.hallazgos) == 1   # el hallazgo vacío se descartó
 
 
 def test_has_critical():
