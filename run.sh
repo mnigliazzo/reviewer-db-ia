@@ -39,6 +39,14 @@ load_dotenv() {
 load_dotenv "$SCRIPT_DIR/.env"
 load_dotenv "$SCRIPT_DIR/.env.local"
 
+# Fail-fast: sin .env ni variables en el entorno no hay nada que hacer.
+if [ ! -f "$SCRIPT_DIR/.env" ] && [ ! -f "$SCRIPT_DIR/.env.local" ] \
+   && [ -z "${MODEL_BASE_URL:-${BASE_URL:-}}" ]; then
+    printf 'ERROR: falta .env (y no hay variables en el entorno).\n' >&2
+    printf '       Copiá el template:  cp .env.example .env\n' >&2
+    exit 1
+fi
+
 PROVIDER="${PROVIDER:-ollama}"
 BASE_URL="${MODEL_BASE_URL:-${BASE_URL:-http://localhost:11434}}"
 MODEL="${MODEL_AGENTS:-${MODEL_AGENT:-qwen2.5-coder}}"

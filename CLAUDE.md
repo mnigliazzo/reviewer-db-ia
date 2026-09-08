@@ -62,6 +62,12 @@ Either way `run.sh` is the single source of truth for the env-var → CLI-flag m
 (`run.ps1` mirrors it for Windows). `run-docker` / `run-local` are also callable
 directly (without the prepare-delta / clean-tmp wrapper).
 
+`make.ps1` is the Windows port of the `Makefile` (same targets, no `make`/bash needed);
+it mirrors the Makefile the way `run.ps1` mirrors `run.sh`. Keep the two in sync when
+changing orchestration (targets, `MODE` dispatch, the prepare-delta trim rules).
+`make.ps1` is ASCII-only on purpose — Windows PowerShell 5.1 misreads a BOM-less UTF-8
+script.
+
 `make prepare-delta` shallow-clones the external `db-scripts` GitLab repo into
 `./tmp/db-script`, reads `current_db_version.txt` (format `YEAR/TIMESTAMP`), and deletes
 every migration folder at or below that version, leaving only the new delta for review.

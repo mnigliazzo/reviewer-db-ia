@@ -1,4 +1,4 @@
-.PHONY: help build run run-docker run-local down ps logs clean prepare-delta clean-tmp install
+.PHONY: help build run run-docker run-local down ps logs clean prepare-delta clean-tmp install check-env
 
 # Configuración de variables del Pipeline
 ENV_FILE_NAME := .env
@@ -26,10 +26,15 @@ help:
 install:
 	uv pip install -e .
 
-build:
+check-env:
+	@test -f $(ENV_FILE_NAME) || { \
+		echo "❌ Falta $(ENV_FILE_NAME). Copiá el template:  cp .env.example .env"; \
+		exit 1; }
+
+build: check-env
 	docker compose $(ENV_FILE) build reviewer
 
-prepare-delta:
+prepare-delta: check-env
 	@echo "🚀 Iniciando preparación del entorno delta..."
 	@rm -rf $(FOLDER_TMP)
 	

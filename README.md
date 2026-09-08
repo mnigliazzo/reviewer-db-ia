@@ -35,9 +35,12 @@ make install              # = uv pip install -e .
 
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
-uv pip install -e .
+.\make.ps1 install
 .\run.ps1
 ```
+
+`make.ps1` es el equivalente del `Makefile` para Windows (mismos targets:
+`install` / `build` / `run` / `clean` / …), no necesita `make` ni bash.
 
 `run.sh` y `run.ps1` leen de `.env` / `.env.local`: `PROVIDER`, `MODEL_BASE_URL`,
 `MODEL_AGENTS`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
@@ -58,6 +61,8 @@ make run MODE=local        # el CLI corre en el venv local (via run.sh), sin con
 make run MODE=docker       # el CLI corre dentro del contenedor
 make clean
 ```
+
+En Windows es lo mismo con `.\make.ps1`: `.\make.ps1 run`, `.\make.ps1 run -Mode local`, etc.
 
 `make` lee la configuración de `.env`. `MODE=local` necesita el venv con deps
 (`make install`).

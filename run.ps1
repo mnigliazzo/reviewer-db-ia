@@ -32,6 +32,14 @@ function Import-DotEnv([string]$Path) {
 Import-DotEnv (Join-Path $ScriptDir '.env')
 Import-DotEnv (Join-Path $ScriptDir '.env.local')
 
+# Fail-fast: sin .env ni variables en el entorno no hay nada que hacer.
+$HasEnvFile = (Test-Path (Join-Path $ScriptDir '.env')) -or (Test-Path (Join-Path $ScriptDir '.env.local'))
+if (-not $HasEnvFile -and
+    [string]::IsNullOrWhiteSpace($env:MODEL_BASE_URL) -and [string]::IsNullOrWhiteSpace($env:BASE_URL)) {
+    Write-Error "Falta .env (y no hay variables en el entorno). Copiá el template:  cp .env.example .env"
+    exit 1
+}
+
 function Def($value, $fallback) { if ([string]::IsNullOrWhiteSpace($value)) { $fallback } else { $value.Trim() } }
 
 $Provider         = Def $env:PROVIDER        'ollama'
