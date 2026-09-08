@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import Annotated, Optional
+from typing import Annotated
 
 from langchain_core.messages import ToolMessage
 from langgraph.graph import END, START, StateGraph
@@ -10,9 +10,23 @@ from langgraph.types import Send
 from typing_extensions import TypedDict
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
-from .models import ScriptReview, parse_review_text
+from .logging_utils import banner
+from .models import Finding, ReviewResult, ScriptReview, format_review
 
 logger = logging.getLogger(__name__)
+
+_REVIEW_FALLO = ReviewResult(
+    seguridad=0,
+    rendimiento=0,
+    mantenibilidad=0,
+    hallazgos=[Finding(
+        prioridad="OBSERVACION",
+        categoria="pipeline",
+        skill="-",
+        titulo="No se pudo completar el review automático de este script",
+        riesgo="El script no fue analizado por el revisor. Revisar manualmente.",
+    )],
+)
 
 
 def _bool_or(a: bool, b: bool) -> bool:
@@ -54,39 +68,61 @@ def build_migration_graph(
             for script, sql_content in scripts
         ]
 
-    def review_script_node(worker: dict) -> dict:
-        """Worker paralelo: maneja un script completo con su loop de tool calls."""
-        script = worker["script"]
-        sql_content = worker["sql_content"]
+    def _load_skills_loop(messages: list) -> list[str]:
+        """Fase 1: deja que el modelo cargue skills con load_skill().
 
-        messages = reviewer.build_messages(script, sql_content, worker.get("schema_context", ""))
+        Muta ``messages`` in-place agregando las respuestas del modelo y los
+        ToolMessage. Devuelve los nombres de las skills cargadas. Corta cuando el
+        modelo deja de pedir herramientas o al llegar a ``max_tool_rounds``.
+        """
         skills_used: list[str] = []
-
-        logger.info(f"Reviewing: {worker['migration_id']}/{script.file.name}")
-
         rounds = 0
         while max_tool_rounds == 0 or rounds < max_tool_rounds:
             rounds += 1
             response = reviewer.model_with_tools.invoke(messages)
             messages.append(response)
-            if not getattr(response, "tool_calls", None):
-                break
-            for tc in response.tool_calls:
-                tool_result = reviewer.load_skill_tool.invoke(tc["args"])
-                name = tc["args"].get("skill_name", "")
+            tool_calls = getattr(response, "tool_calls", None)
+            if not tool_calls:
+                return skills_used
+            for tc in tool_calls:
+                args = tc.get("args", {}) or {}
+                name = (args.get("skill_name") or "").strip()
+                try:
+                    tool_result = reviewer.load_skill_tool.invoke(args)
+                except Exception as exc:  # noqa: BLE001 - queremos seguir el loop
+                    logger.warning(f"Fallo cargando skill {name!r}: {exc}")
+                    tool_result = f"Error cargando skill '{name}': {exc}"
                 if name and name not in skills_used:
                     skills_used.append(name)
                 messages.append(ToolMessage(content=tool_result, tool_call_id=tc["id"]))
 
-        review_text = messages[-1].content
-        result = parse_review_text(review_text, skills_used)
+        logger.warning(f"max_tool_rounds ({max_tool_rounds}) alcanzado en carga de skills.")
+        return skills_used
+
+    def review_script_node(worker: dict) -> dict:
+        """Worker paralelo: carga skills y pide el review estructurado de un script."""
+        script = worker["script"]
+        sql_content = worker["sql_content"]
+        ref = f"{worker['migration_id']}/{script.file.name}"
+
+        logger.info(f"Reviewing: {ref}")
+
+        try:
+            messages = reviewer.build_messages(
+                script, sql_content, worker.get("schema_context", "")
+            )
+            skills_used = _load_skills_loop(messages)
+            output = reviewer.finalize(messages)
+            result = ReviewResult.from_output(output, skills_used)
+        except Exception:  # noqa: BLE001 - un worker no debe tumbar el pipeline
+            logger.exception(f"El review de {ref} falló")
+            result = _REVIEW_FALLO.model_copy(deep=True)
+
         sr = ScriptReview(script=script, result=result)
 
-        logger.info(f"{'=' * 60}")
-        logger.info(f"REVIEW: {script.file.name}")
-        logger.info(f"Skills usadas: {', '.join(skills_used) if skills_used else 'ninguna'}")
-        logger.info(f"{'=' * 60}")
-        logger.info(review_text)
+        banner(logger, f"REVIEW: {script.file.name}")
+        logger.info(f"Skills usadas: {', '.join(result.skills_utilizadas) or 'ninguna'}")
+        logger.info(format_review(result))
 
         return {
             "reviews": [sr],
@@ -102,29 +138,38 @@ def build_migration_graph(
         return "escalate" if state.get("has_critical") else "coherence"
 
     def coherence_node(state: MigrationState) -> dict:
-        result = coherence_agent.analyze(
-            state["migration_id"],
-            state.get("forward_scripts_data", []),
-            state.get("rollback_scripts_data", []),
-        )
-        logger.info(f"{'~' * 60}")
-        logger.info(f"COHERENCIA: {state['migration_id']}")
-        logger.info(f"{'~' * 60}")
+        mid = state["migration_id"]
+        try:
+            result = coherence_agent.analyze(
+                mid,
+                state.get("forward_scripts_data", []),
+                state.get("rollback_scripts_data", []),
+            )
+        except Exception:  # noqa: BLE001 - no verificable => no aprobado (fail-safe)
+            logger.exception(f"El análisis de coherencia de {mid} falló")
+            return {
+                "coherence_report": "ERROR: no se pudo verificar la coherencia del rollback.",
+                "coherence_approved": False,
+            }
+        banner(logger, f"COHERENCIA: {mid}", "~")
         logger.info(result.report)
         if not result.approved:
-            logger.warning(f"Rollback incompleto detectado en migración {state['migration_id']}")
+            logger.warning(f"Rollback incompleto detectado en migración {mid}")
         return {"coherence_report": result.report, "coherence_approved": result.approved}
 
     def mini_reporter_node(state: MigrationState) -> dict:
-        report = mini_reporter_agent.report(
-            state["migration_id"],
-            state.get("reviews", []),
-            state.get("coherence_report", ""),
-            state.get("coherence_approved", True),
-        )
-        logger.info(f"{'*' * 60}")
-        logger.info(f"INFORME MIGRACIÓN: {state['migration_id']}")
-        logger.info(f"{'*' * 60}")
+        mid = state["migration_id"]
+        try:
+            report = mini_reporter_agent.report(
+                mid,
+                state.get("reviews", []),
+                state.get("coherence_report", ""),
+                state.get("coherence_approved", True),
+            )
+        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
+            logger.exception(f"El mini-informe de {mid} falló")
+            report = f"(No se pudo generar el informe de la migración {mid}.)"
+        banner(logger, f"INFORME MIGRACIÓN: {mid}", "*")
         logger.info(report)
         return {"mini_report": report}
 
@@ -179,7 +224,7 @@ def build_pipeline_graph(
     reviewer: ReviewerAgent,
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
-    reporter_agent: Optional[ReporterAgent] = None,
+    reporter_agent: ReporterAgent | None = None,
     max_tool_rounds: int = 0,
     max_schema_scripts: int = 0,
 ):
@@ -189,9 +234,7 @@ def build_pipeline_graph(
         queue = list(state["migrations_queue"])
         migration_id, forward_scripts, rollback_scripts_data = queue.pop(0)
 
-        logger.info(f"{'#' * 60}")
-        logger.info(f"MIGRATION: {migration_id}")
-        logger.info(f"{'#' * 60}")
+        banner(logger, f"MIGRATION: {migration_id}", "#")
 
         migration_result = migration_graph.invoke({
             "migration_id": migration_id,
@@ -231,10 +274,12 @@ def build_pipeline_graph(
     def global_reporter_node(state: PipelineState) -> dict:
         if reporter_agent is None:
             return {"final_report": ""}
-        logger.info(f"{'#' * 60}")
-        logger.info("INFORME EJECUTIVO FINAL")
-        logger.info(f"{'#' * 60}")
-        report = reporter_agent.report(state.get("migration_reports", []))
+        banner(logger, "INFORME EJECUTIVO FINAL", "#")
+        try:
+            report = reporter_agent.report(state.get("migration_reports", []))
+        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
+            logger.exception("El informe ejecutivo final falló")
+            report = "(No se pudo generar el informe ejecutivo final.)"
         logger.info(report)
         return {"final_report": report}
 

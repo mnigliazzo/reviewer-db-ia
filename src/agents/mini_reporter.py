@@ -5,8 +5,8 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..models import ScriptReview
-from .reviewer import _load_prompt
+from ..models import ScriptReview, format_review
+from .base import load_prompt, message_text
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class MiniReporterAgent:
 
     def __init__(self, model: BaseChatModel):
         self._model = model
-        self._system_prompt = _load_prompt("mini_reporter_system.md")
+        self._system_prompt = load_prompt("mini_reporter_system.md")
 
     def report(
         self,
@@ -29,9 +29,9 @@ class MiniReporterAgent:
         coherence_approved: bool,
     ) -> str:
         # ── Métricas desde datos estructurados ────────────────────────────────
-        seg   = [r.result.seguridad      for r in reviews if r.result.seguridad      is not None]
-        rend  = [r.result.rendimiento    for r in reviews if r.result.rendimiento    is not None]
-        mant  = [r.result.mantenibilidad for r in reviews if r.result.mantenibilidad is not None]
+        seg  = [r.result.seguridad      for r in reviews]
+        rend = [r.result.rendimiento    for r in reviews]
+        mant = [r.result.mantenibilidad for r in reviews]
 
         def avg(scores: list[int]) -> str:
             return f"{sum(scores) / len(scores):.1f}" if scores else "N/A"
@@ -45,7 +45,7 @@ class MiniReporterAgent:
 
         # ── Resumen narrativo vía LLM ──────────────────────────────────────────
         context = "\n\n".join(
-            f"--- {r.script.file.name} ---\n{r.result.to_text()}" for r in reviews
+            f"--- {r.script.file.name} ---\n{format_review(r.result)}" for r in reviews
         )
         if coherence_report:
             context += f"\n\n=== COHERENCIA ===\n{coherence_report}"
@@ -55,7 +55,7 @@ class MiniReporterAgent:
             HumanMessage(content=f"Migración: {migration_id}\n\n{context}"),
         ]
         logger.info(f"MiniReporterAgent generando informe para migración {migration_id}")
-        executive_summary = self._model.invoke(messages).content.strip()
+        executive_summary = message_text(self._model.invoke(messages)).strip()
 
         # ── Ensamblar informe ──────────────────────────────────────────────────
         lines = [

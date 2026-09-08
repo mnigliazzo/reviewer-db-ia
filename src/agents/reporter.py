@@ -5,7 +5,7 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .reviewer import _load_prompt
+from .base import load_prompt, message_text
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class ReporterAgent:
 
     def __init__(self, model: BaseChatModel):
         self._model = model
-        self._system_prompt = _load_prompt("reporter_system.md")
+        self._system_prompt = load_prompt("reporter_system.md")
 
     def report(self, migration_reports: list[str]) -> str:
         if not migration_reports:
@@ -38,4 +38,4 @@ class ReporterAgent:
         ]
 
         logger.info("ReporterAgent generando informe ejecutivo final")
-        return self._model.invoke(messages).content
+        return message_text(self._model.invoke(messages))

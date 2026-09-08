@@ -1,16 +1,30 @@
-.PHONY: help build run down ps logs clean prepare-delta clean-tmp
+.PHONY: help build run run-docker run-local down ps logs clean prepare-delta clean-tmp install
 
 # Configuración de variables del Pipeline
-ENV_FILE=--env-file .env.jali
+ENV_FILE_NAME := .env
+ENV_FILE      := --env-file $(ENV_FILE_NAME)
 FOLDER_TMP=./tmp/db-script
 FILE_VERSION=current_db_version.txt
 
+# Modo de ejecución de `make run`: docker (default) | local.
+# Prioridad: variable en línea de comandos > MODE en .env > docker.
+MODE := $(strip $(or $(MODE),$(shell awk -F= '/^MODE=/{sub(/[ \t#\r].*/,"",$$2); print $$2; exit}' $(ENV_FILE_NAME) 2>/dev/null),docker))
+ifeq ($(filter $(MODE),docker local),)
+$(error MODE inválido: '$(MODE)'. Valores válidos: docker | local)
+endif
+
 help:
 	@echo ""
+	@echo "  make install           — Instala deps con uv"
 	@echo "  make build             — Construye las imágenes Docker"
-	@echo "  make run               — Ejecuta la auditoría IA sobre el delta actual"
+	@echo "  make run               — Auditoría IA sobre el delta actual (MODE=$(MODE))"
+	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.sh)"
+	@echo "  make run MODE=docker   — Igual, pero dentro del contenedor"
 	@echo "  make clean             — Limpia contenedores y residuos temporales"
 	@echo ""
+
+install:
+	uv pip install -e .
 
 build:
 	docker compose $(ENV_FILE) build reviewer
@@ -19,11 +33,11 @@ prepare-delta:
 	@echo "🚀 Iniciando preparación del entorno delta..."
 	@rm -rf $(FOLDER_TMP)
 	
-	@export GIT_USERNAME=$$(grep GIT_USER .env.jali | cut -d'=' -f2 | tr -d '\r\n'); \
-	 B64_PASS=$$(grep GIT_PASSWORD .env.jali | cut -d'=' -f2 | tr -d '\r\n'); \
+	@export GIT_USERNAME=$$(grep GIT_USER $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 B64_PASS=$$(grep GIT_PASSWORD $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 export GIT_PASSWORD=$$(echo "$$B64_PASS" | tr -d '\r\n' | base64 -d); \
-	 BRANCH=$$(grep GIT_BRANCH .env.jali | cut -d'=' -f2 | tr -d '\r\n'); \
-	 URL=$$(grep REPO_URL .env.jali | cut -d'=' -f2 | tr -d '\r\n'); \
+	 BRANCH=$$(grep GIT_BRANCH $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 URL=$$(grep REPO_URL $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 \
 	 echo "📥 Clonando rama $$BRANCH de forma segura..."; \
 	 git clone --depth 1 -b "$$BRANCH" --single-branch "$$URL" $(FOLDER_TMP)
@@ -68,10 +82,18 @@ prepare-delta:
 	@echo "✅ Filtro completado. Carpetas remanentes listas en $(FOLDER_TMP)"
 
 run: prepare-delta
-	@echo "🤖 Lanzando agente de IA sobre el delta de migración..."
+	@$(MAKE) --no-print-directory run-$(MODE)
+	@$(MAKE) --no-print-directory clean-tmp
+
+run-docker:
+	@echo "🤖 Lanzando agente de IA (docker) sobre el delta de migración..."
 	@# 🟢 Volvemos a inyectar $(ENV_FILE) para que Docker tenga todas sus variables
 	docker compose $(ENV_FILE) run --rm reviewer
-	@$(MAKE) clean-tmp
+
+run-local:
+	@echo "🤖 Lanzando agente de IA (local / venv) sobre el delta de migración..."
+	@# run.sh lee .env, elige el python del venv y arma los flags del CLI.
+	@bash run.sh
 
 down: 
 	docker compose $(ENV_FILE) down

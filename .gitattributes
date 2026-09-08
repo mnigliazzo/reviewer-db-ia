@@ -1,0 +1,11 @@
+# Todo lo que corre en Linux / dentro del contenedor debe quedar con LF.
+# run.sh es el entrypoint del contenedor (CMD del Dockerfile) — un CRLF lo rompe.
+*.sh        text eol=lf
+*.py        text eol=lf
+Makefile    text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Scripts de Windows: CRLF.
+*.ps1       text eol=crlf

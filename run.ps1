@@ -1,13 +1,72 @@
-$PROVIDER = 'ollama'
+# Ejecuta el reviewer directamente (Windows / PowerShell).
+# Toma la config de .env (y .env.local si existe); las variables ya presentes
+# en el entorno tienen prioridad. Uso:  .\run.ps1
+$ErrorActionPreference = 'Stop'
 
-$MODEL_BASE_URL = 'http://localhost:11434'
-$MODEL_AGENTS = 'qwen2.5-coder'
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $ScriptDir
 
-$LOG_LEVEL = 'INFO'
+# Solo estas claves se leen del .env (evita arrastrar proxy/credenciales de Docker).
+$AllowKeys = @(
+    'PROVIDER', 'MODEL_BASE_URL', 'BASE_URL', 'MODEL_AGENT', 'MODEL_AGENTS',
+    'API_KEY', 'LOG_LEVEL', 'SCRIPTS_PATH', 'REVIEW_SCRIPTS_PATH', 'SKIP_REPORTER',
+    'REVIEWER_MAX_TOOL_ROUNDS', 'REVIEWER_MAX_SCHEMA_SCRIPTS',
+    'REVIEWER_FAIL_ON', 'REVIEWER_LLM_TIMEOUT', 'REVIEWER_LLM_RETRIES', 'REVIEWER_SARIF'
+)
 
-$SCRIPTS_PATH = "D:\scripts"
-$REVIEWER_MAX_TOOL_ROUNDS = 0
-$REVIEWER_MAX_SCHEMA_SCRIPTS = 0
+function Import-DotEnv([string]$Path) {
+    if (-not (Test-Path $Path)) { return }
+    foreach ($raw in Get-Content -LiteralPath $Path) {
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $idx = $line.IndexOf('=')
+        if ($idx -lt 1) { continue }
+        $key = $line.Substring(0, $idx).Trim()
+        if ($AllowKeys -notcontains $key) { continue }
+        if (Test-Path "env:$key") { continue }   # el entorno gana
+        $val = $line.Substring($idx + 1).Trim().Trim('"').Trim("'").Trim()
+        Set-Item -Path "env:$key" -Value $val
+    }
+}
 
+Import-DotEnv (Join-Path $ScriptDir '.env')
+Import-DotEnv (Join-Path $ScriptDir '.env.local')
 
-python -m src.main --log-level ${LOG_LEVEL} --scripts-path ${SCRIPTS_PATH} --provider ${PROVIDER} --base-url ${MODEL_BASE_URL} --model-agent ${MODEL_AGENTS} --max-tool-rounds ${REVIEWER_MAX_TOOL_ROUNDS} --max-schema-scripts ${REVIEWER_MAX_SCHEMA_SCRIPTS}
+function Def($value, $fallback) { if ([string]::IsNullOrWhiteSpace($value)) { $fallback } else { $value.Trim() } }
+
+$Provider         = Def $env:PROVIDER        'ollama'
+$BaseUrl          = Def $env:MODEL_BASE_URL  (Def $env:BASE_URL 'http://localhost:11434')
+$Model            = Def $env:MODEL_AGENTS    (Def $env:MODEL_AGENT 'qwen2.5-coder')
+$LogLevel         = Def $env:LOG_LEVEL       'INFO'
+$ScriptsPath      = Def $env:SCRIPTS_PATH    (Def $env:REVIEW_SCRIPTS_PATH (Join-Path $ScriptDir 'tmp/db-script'))
+$MaxToolRounds    = Def $env:REVIEWER_MAX_TOOL_ROUNDS    '0'
+$MaxSchemaScripts = Def $env:REVIEWER_MAX_SCHEMA_SCRIPTS '0'
+$FailOn           = Def $env:REVIEWER_FAIL_ON            'CRÍTICO'
+$LlmTimeout       = Def $env:REVIEWER_LLM_TIMEOUT        '120'
+$LlmRetries       = Def $env:REVIEWER_LLM_RETRIES        '2'
+
+# Python del venv del repo si no hay uno activo.
+$Python = 'python'
+if (-not $env:VIRTUAL_ENV -and (Test-Path (Join-Path $ScriptDir '.venv/Scripts/python.exe'))) {
+    $Python = Join-Path $ScriptDir '.venv/Scripts/python.exe'
+}
+
+$cliArgs = @(
+    '-m', 'src.main',
+    '--log-level',          $LogLevel,
+    '--scripts-path',       $ScriptsPath,
+    '--provider',           $Provider,
+    '--base-url',           $BaseUrl,
+    '--model-agent',        $Model,
+    '--max-tool-rounds',    $MaxToolRounds,
+    '--max-schema-scripts', $MaxSchemaScripts,
+    '--fail-on',            $FailOn,
+    '--llm-timeout',        $LlmTimeout,
+    '--llm-retries',        $LlmRetries
+)
+if (-not [string]::IsNullOrWhiteSpace($env:API_KEY)) { $cliArgs += @('--api-key', $env:API_KEY) }
+if (-not [string]::IsNullOrWhiteSpace($env:REVIEWER_SARIF)) { $cliArgs += @('--sarif', $env:REVIEWER_SARIF) }
+if ($env:SKIP_REPORTER -in @('1', 'true', 'True', 'yes', 'YES')) { $cliArgs += '--skip-reporter' }
+
+& $Python @cliArgs
+exit $LASTEXITCODE

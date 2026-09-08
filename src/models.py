@@ -1,37 +1,50 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# Prioridades válidas de un hallazgo, en orden de severidad descendente.
+PRIORIDADES = ("CRÍTICO", "ALTO", "MEDIO", "BAJO", "MEJORA", "OBSERVACION")
+Prioridad = Literal["CRÍTICO", "ALTO", "MEDIO", "BAJO", "MEJORA", "OBSERVACION"]
+
 
 class Finding(BaseModel):
-    prioridad: str   # CRÍTICO | ALTO | MEDIO | BAJO | MEJORA | OBSERVACION
-    categoria: str
-    skill: str
-    titulo: str
-    ubicacion: str = ""
-    riesgo: str = ""
-    recomendacion: str = ""
+    """Un hallazgo del review. Es parte del schema de salida estructurada del LLM."""
+
+    prioridad: Prioridad = Field(description="Severidad del hallazgo")
+    categoria: str = Field(description="Categoría corta, ej: Seguridad, Rendimiento, Integridad")
+    skill: str = Field(description="Nombre de la skill que aplicaste para detectarlo, o '-'")
+    titulo: str = Field(description="Título breve del hallazgo")
+    ubicacion: str = Field(default="", description="Dónde en el script (texto libre)")
+    linea: int | None = Field(default=None, description="Número de línea, o null si no aplica")
+    riesgo: str = Field(default="", description="Qué puede salir mal")
+    recomendacion: str = Field(default="", description="Cómo corregirlo")
 
 
-class ReviewResult(BaseModel):
-    skills_utilizadas: list[str] = Field(default_factory=list)
-    seguridad: Optional[int] = None
-    rendimiento: Optional[int] = None
-    mantenibilidad: Optional[int] = None
+class ReviewOutput(BaseModel):
+    """Schema que el ReviewerAgent le pide al LLM vía ``with_structured_output``."""
+
+    seguridad: int = Field(ge=0, le=10, description="Puntaje de seguridad 0-10")
+    rendimiento: int = Field(ge=0, le=10, description="Puntaje de rendimiento 0-10")
+    mantenibilidad: int = Field(ge=0, le=10, description="Puntaje de mantenibilidad 0-10")
     hallazgos: list[Finding] = Field(default_factory=list)
-    raw_text: str = ""
+
+
+class ReviewResult(ReviewOutput):
+    """``ReviewOutput`` + los datos que agrega el pipeline (no los pone el LLM)."""
+
+    skills_utilizadas: list[str] = Field(default_factory=list)
 
     @property
     def has_critical(self) -> bool:
         return any(f.prioridad == "CRÍTICO" for f in self.hallazgos)
 
-    def to_text(self) -> str:
-        return self.raw_text
+    @classmethod
+    def from_output(cls, output: ReviewOutput, skills_utilizadas: list[str]) -> ReviewResult:
+        return cls(**output.model_dump(), skills_utilizadas=skills_utilizadas)
 
 
 @dataclass
@@ -51,55 +64,29 @@ class ScriptReview:
         return self.result.skills_utilizadas
 
 
-# ── Parser ────────────────────────────────────────────────────────────────────
+def format_review(result: ReviewResult) -> str:
+    """Render legible de un ``ReviewResult`` para logs y para el contexto del
+    MiniReporterAgent (reemplaza al viejo ``raw_text``)."""
+    lines = [
+        f"Seguridad: {result.seguridad}/10   "
+        f"Rendimiento: {result.rendimiento}/10   "
+        f"Mantenibilidad: {result.mantenibilidad}/10",
+        "",
+    ]
+    if not result.hallazgos:
+        lines.append("Sin hallazgos.")
+        return "\n".join(lines)
 
-_HEADER_RE = re.compile(
-    r"\s*\[(CRÍTICO|ALTO|MEDIO|BAJO|MEJORA|OBSERVACION)\]\s*"
-    r"\[([^\]]+)\]\s*\[([^\]]+)\]:\s*(.+)",
-    re.IGNORECASE,
-)
-_SCORE_RE = re.compile(r"(Seguridad|Rendimiento|Mantenibilidad):\s+(\d+)/10", re.IGNORECASE)
-
-
-def _extract_field(lines: list[str], name: str) -> str:
-    prefix = f"{name}:"
-    for line in lines:
-        if line.startswith(prefix):
-            return line[len(prefix):].strip()
-    return ""
-
-
-def parse_review_text(text: str, skills_used: list[str]) -> ReviewResult:
-    scores: dict[str, int] = {}
-    for m in _SCORE_RE.finditer(text):
-        scores[m.group(1).lower()] = int(m.group(2))
-
-    hallazgos: list[Finding] = []
-    section_match = re.search(r"HALLAZGOS\s*\n(.*?)$", text, re.DOTALL)
-    if section_match and "Sin hallazgos" not in section_match.group(1):
-        for block in re.split(r"\n\s*\n", section_match.group(1).strip()):
-            lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
-            if not lines:
-                continue
-            m = _HEADER_RE.match(lines[0])
-            if not m:
-                continue
-            prioridad, categoria, skill, titulo = m.groups()
-            hallazgos.append(Finding(
-                prioridad=prioridad.upper(),
-                categoria=categoria.strip(),
-                skill=skill.strip(),
-                titulo=titulo.strip(),
-                ubicacion=_extract_field(lines[1:], "Ubicacion"),
-                riesgo=_extract_field(lines[1:], "Riesgo"),
-                recomendacion=_extract_field(lines[1:], "Recomendacion"),
-            ))
-
-    return ReviewResult(
-        skills_utilizadas=skills_used,
-        seguridad=scores.get("seguridad"),
-        rendimiento=scores.get("rendimiento"),
-        mantenibilidad=scores.get("mantenibilidad"),
-        hallazgos=hallazgos,
-        raw_text=text,
-    )
+    for f in result.hallazgos:
+        loc = f.ubicacion or ""
+        if f.linea is not None:
+            loc = f"{loc} (línea {f.linea})".strip()
+        lines.append(f"[{f.prioridad}] [{f.categoria}] [{f.skill}]: {f.titulo}")
+        if loc:
+            lines.append(f"  Ubicacion: {loc}")
+        if f.riesgo:
+            lines.append(f"  Riesgo: {f.riesgo}")
+        if f.recomendacion:
+            lines.append(f"  Recomendacion: {f.recomendacion}")
+        lines.append("")
+    return "\n".join(lines).rstrip()

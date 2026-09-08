@@ -1,7 +1,10 @@
 deploy
 .env*
-output.gemma4*
+!.env.example
+output.*
 tmp/*
-src/__pycache__/
-src/agents/__pycache__/
+.venv/
+__pycache__/
+**/__pycache__/
 src/reviewer_db_ia.egg-info/
+.pytest_cache/

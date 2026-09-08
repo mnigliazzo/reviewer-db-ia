@@ -20,16 +20,22 @@ services:
         - HTTP_PROXY=${HTTP_PROXY:-}
         - HTTPS_PROXY=${HTTPS_PROXY:-}
         - NO_PROXY=${NO_PROXY:-}
-    command: >
-      python -m src.main
-      --log-level ${LOG_LEVEL:-INFO}
-      --scripts-path /app/scripts_review
-      --provider ${PROVIDER:-ollama}
-      --base-url ${MODEL_BASE_URL}
-      --model-agent ${MODEL_AGENTS}
-      --max-tool-rounds ${REVIEWER_MAX_TOOL_ROUNDS:-0}
-      --max-schema-scripts ${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}
-
+    # El comando lo define el CMD del Dockerfile (bash run.sh): run.sh es la única
+    # fuente del mapeo env-var -> flag del CLI, tanto local como en contenedor.
+    # Acá solo se pasan al contenedor las variables que run.sh consume.
+    environment:
+      PROVIDER: ${PROVIDER:-ollama}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_AGENTS: ${MODEL_AGENTS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_KEY: ${API_KEY:-}
+      SKIP_REPORTER: ${SKIP_REPORTER:-}
+      REVIEWER_MAX_TOOL_ROUNDS: ${REVIEWER_MAX_TOOL_ROUNDS:-0}
+      REVIEWER_MAX_SCHEMA_SCRIPTS: ${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}
+      REVIEWER_FAIL_ON: ${REVIEWER_FAIL_ON:-CRÍTICO}
+      REVIEWER_LLM_TIMEOUT: ${REVIEWER_LLM_TIMEOUT:-120}
+      REVIEWER_LLM_RETRIES: ${REVIEWER_LLM_RETRIES:-2}
+      REVIEWER_SARIF: ${REVIEWER_SARIF:-}
     volumes:
       - ${REVIEW_SCRIPTS_PATH}:/app/scripts_review
 

@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .reviewer import _load_prompt
+from .base import load_prompt, message_text
 
 logger = logging.getLogger(__name__)
+
+_COHERENTE_RE = re.compile(r"^\s*RESULTADO:\s*COHERENTE\s*$", re.IGNORECASE | re.MULTILINE)
+_INCOMPLETO_RE = re.compile(r"^\s*RESULTADO:\s*INCOMPLETO\b", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_coherence_verdict(text: str) -> bool | None:
+    """Extrae el veredicto de la línea ``RESULTADO:`` del informe de coherencia.
+
+    Devuelve ``True`` si el rollback es coherente, ``False`` si es incompleto,
+    y ``None`` si el informe no contiene ninguna de las dos líneas de cierre
+    contractuales (caso indeterminado, se trata como no aprobado aguas arriba).
+    """
+    if _INCOMPLETO_RE.search(text):
+        return False
+    if _COHERENTE_RE.search(text):
+        return True
+    return None
 
 
 @dataclass
@@ -33,7 +51,7 @@ class CoherenceAgent:
 
     def __init__(self, model: BaseChatModel):
         self._model = model
-        self._system_prompt = _load_prompt("coherence_system.md")
+        self._system_prompt = load_prompt("coherence_system.md")
 
     def analyze(
         self,
@@ -83,7 +101,12 @@ class CoherenceAgent:
         logger.info(f"CoherenceAgent analizando migración {migration} "
                     f"({len(forward_scripts)} forward, {len(rollback_scripts)} rollback)")
 
-        response = self._model.invoke(messages).content
-        approved = "RESULTADO: COHERENTE" in response.upper()
+        report = message_text(self._model.invoke(messages))
+        verdict = parse_coherence_verdict(report)
+        if verdict is None:
+            logger.warning(
+                f"Informe de coherencia de {migration} sin línea RESULTADO: — "
+                "se trata como INCOMPLETO."
+            )
 
-        return CoherenceResult(report=response, approved=approved)
+        return CoherenceResult(report=report, approved=verdict is True)

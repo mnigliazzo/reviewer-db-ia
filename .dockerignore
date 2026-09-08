@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+tmp
+demo
+output.*
+*.log
+**/__pycache__
+**/*.egg-info
+.claude
+tests
+.pytest_cache
+.ruff_cache
+# .env* se pasa por --env-file en compose, no hace falta dentro de la imagen
+.env
+.env.*
+!.env.example
