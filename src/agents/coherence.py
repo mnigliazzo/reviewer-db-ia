@@ -1,32 +1,16 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .base import load_prompt, message_text
+from ..llm import resilient
+from ..models import CoherenceOutput, format_coherence
+from .base import load_prompt
 
 logger = logging.getLogger(__name__)
-
-_COHERENTE_RE = re.compile(r"^\s*RESULTADO:\s*COHERENTE\s*$", re.IGNORECASE | re.MULTILINE)
-_INCOMPLETO_RE = re.compile(r"^\s*RESULTADO:\s*INCOMPLETO\b", re.IGNORECASE | re.MULTILINE)
-
-
-def parse_coherence_verdict(text: str) -> bool | None:
-    """Extrae el veredicto de la línea ``RESULTADO:`` del informe de coherencia.
-
-    Devuelve ``True`` si el rollback es coherente, ``False`` si es incompleto,
-    y ``None`` si el informe no contiene ninguna de las dos líneas de cierre
-    contractuales (caso indeterminado, se trata como no aprobado aguas arriba).
-    """
-    if _INCOMPLETO_RE.search(text):
-        return False
-    if _COHERENTE_RE.search(text):
-        return True
-    return None
 
 
 @dataclass
@@ -40,17 +24,18 @@ class CoherenceAgent:
     Agente de coherencia de migración.
 
     Dado el conjunto completo de scripts forward y rollback de una migración,
-    genera:
-      1. Resumen legible de qué hace el despliegue (forward)
-      2. Resumen legible de qué hace el rollback
-      3. Análisis de coherencia: ¿el rollback revierte todo lo que hizo el forward?
+    pide al LLM un veredicto estructurado (``CoherenceOutput``) con:
+      1. Resumen de qué hace el despliegue (forward)
+      2. Resumen de qué hace el rollback
+      3. Análisis operación por operación + veredicto COHERENTE / INCOMPLETO
 
     Se ejecuta una vez por migración, después de que todos los scripts
-    individuales fueron revisados.
+    individuales fueron revisados. Recibe el modelo base (sin envolver) y los
+    reintentos: ``with_structured_output`` debe aplicarse antes de ``resilient``.
     """
 
-    def __init__(self, model: BaseChatModel):
-        self._model = model
+    def __init__(self, model: BaseChatModel, retries: int = 0):
+        self._structured = resilient(model.with_structured_output(CoherenceOutput), retries)
         self._system_prompt = load_prompt("coherence_system.md")
 
     def analyze(
@@ -101,12 +86,9 @@ class CoherenceAgent:
         logger.info(f"CoherenceAgent analizando migración {migration} "
                     f"({len(forward_scripts)} forward, {len(rollback_scripts)} rollback)")
 
-        report = message_text(self._model.invoke(messages))
-        verdict = parse_coherence_verdict(report)
-        if verdict is None:
-            logger.warning(
-                f"Informe de coherencia de {migration} sin línea RESULTADO: — "
-                "se trata como INCOMPLETO."
-            )
+        result = self._structured.invoke(messages)
+        if not isinstance(result, CoherenceOutput):
+            # algunos providers devuelven dict si el schema no se respeta del todo
+            result = CoherenceOutput.model_validate(result)
 
-        return CoherenceResult(report=report, approved=verdict is True)
+        return CoherenceResult(report=format_coherence(result), approved=result.approved)

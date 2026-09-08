@@ -100,6 +100,47 @@ class ReviewResult(ReviewOutput):
         )
 
 
+class CoherenceOutput(BaseModel):
+    """Schema que el CoherenceAgent le pide al LLM vía ``with_structured_output``.
+
+    ``veredicto`` se normaliza a COHERENTE / INCOMPLETO: cualquier valor que no
+    sea exactamente COHERENTE cae en INCOMPLETO (fail-safe — un rollback no
+    verificable bloquea el merge). El default también es INCOMPLETO, así un
+    modelo que no devuelve veredicto no aprueba por omisión.
+    """
+
+    resumen_forward: str = Field(
+        default="",
+        description="Qué crea, modifica o elimina cada script de despliegue (forward), con nombres reales de objetos",
+    )
+    resumen_rollback: str = Field(
+        default="",
+        description="Qué elimina, revierte o restaura cada script de rollback",
+    )
+    analisis_coherencia: str = Field(
+        default="",
+        description="Operación por operación: si cada cambio del forward tiene su contraparte en el rollback",
+    )
+    veredicto: str = Field(
+        default="INCOMPLETO",
+        description='EXACTAMENTE "COHERENTE" o "INCOMPLETO"',
+        json_schema_extra={"enum": ["COHERENTE", "INCOMPLETO"]},
+    )
+    operaciones_sin_revertir: list[str] = Field(
+        default_factory=list,
+        description="Operaciones del forward que el rollback no revierte (vacía si es COHERENTE)",
+    )
+
+    @field_validator("veredicto", mode="before")
+    @classmethod
+    def _norm_veredicto(cls, v: object) -> str:
+        return "COHERENTE" if str(v or "").strip().upper() == "COHERENTE" else "INCOMPLETO"
+
+    @property
+    def approved(self) -> bool:
+        return self.veredicto == "COHERENTE"
+
+
 @dataclass
 class SqlScript:
     migration: str
@@ -143,3 +184,24 @@ def format_review(result: ReviewResult) -> str:
             lines.append(f"  Recomendacion: {f.recomendacion}")
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def format_coherence(output: CoherenceOutput) -> str:
+    """Render legible de un ``CoherenceOutput`` para logs y para el contexto del
+    MiniReporterAgent (reemplaza al informe en prosa que antes generaba el LLM)."""
+    lines = [
+        "DESPLIEGUE (FORWARD)",
+        f"  {output.resumen_forward or 'Sin informacion.'}",
+        "",
+        "ROLLBACK",
+        f"  {output.resumen_rollback or 'Sin informacion.'}",
+        "",
+        "COHERENCIA",
+        f"  {output.analisis_coherencia or 'Sin informacion.'}",
+        "",
+        f"RESULTADO: {output.veredicto}",
+    ]
+    if output.operaciones_sin_revertir:
+        lines.append("Operaciones sin revertir:")
+        lines += [f"  - {op}" for op in output.operaciones_sin_revertir]
+    return "\n".join(lines)

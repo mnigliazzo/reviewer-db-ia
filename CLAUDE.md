@@ -133,19 +133,20 @@ informational).
   ReviewOutput)`. System prompt = `reviewer_system.md` + a generated skills header.
   All runnables are wrapped with `llm.resilient()` (retry + backoff).
 - **`CoherenceAgent`** — runs once per migration; checks the rollback reverts the
-  forward. Approval is decided by `parse_coherence_verdict` (in `coherence.py`), a
-  line-anchored regex: a line that is exactly `RESULTADO: COHERENTE` → approved, a line
-  starting `RESULTADO: INCOMPLETO` → not approved, neither present → not approved + a
-  `WARNING`. The `coherence_system.md` prompt is contracted to end with one of those
-  two lines.
+  forward. One `model.with_structured_output(CoherenceOutput)` call (no text parsing) —
+  `CoherenceOutput.veredicto` is normalized to `COHERENTE` / `INCOMPLETO` (anything not
+  exactly `COHERENTE` → `INCOMPLETO`, and that's also the default), and
+  `.approved` is `veredicto == "COHERENTE"`. `format_coherence()` renders the
+  human-readable report (logged + fed to the MiniReporter) from the structured fields.
 - **`MiniReporterAgent`** — per-migration report: metrics computed in Python from
   structured findings + an LLM narrative summary, assembled into a fixed text layout.
 - **`ReporterAgent`** — final executive report consolidating the mini-reports;
   skipped entirely with `--skip-reporter`.
 
-`CoherenceAgent` / `MiniReporterAgent` / `ReporterAgent` receive the model already
-wrapped by `llm.resilient()` from `main.py`; `ReviewerAgent` gets the bare model plus a
-`retries` int (it must `bind_tools` / `with_structured_output` first, then wrap).
+`MiniReporterAgent` / `ReporterAgent` receive the model already wrapped by
+`llm.resilient()` from `main.py`; `ReviewerAgent` and `CoherenceAgent` get the bare
+model plus a `retries` int (they must `bind_tools` / `with_structured_output` first,
+then wrap).
 
 All agents share `load_prompt` and `message_text` from `src/agents/base.py` and load a
 plain-text prompt from `src/prompts/`. `message_text` normalizes an LLM response's
@@ -169,6 +170,11 @@ skills_utilizadas` (added by the worker, not the LLM); build it with
 `ValidationError` (→ caught by the worker → `_REVIEW_FALLO`). `Finding.linea: int | None`
 feeds the SARIF region. `format_review()` renders a `ReviewResult` to text for logs and
 the MiniReporter's LLM context.
+
+`CoherenceOutput` (same module) is the `with_structured_output` schema for
+`CoherenceAgent`: `resumen_forward` / `resumen_rollback` / `analisis_coherencia` prose
++ `veredicto` (normalized `COHERENTE` / `INCOMPLETO`, `.approved` helper) +
+`operaciones_sin_revertir`. `format_coherence()` renders it to the report text.
 
 `reviewer_system.md` describes these fields to the model and carries a long numbered
 "PROHIBIDO REPORTAR" list of known false positives — extend that list rather than

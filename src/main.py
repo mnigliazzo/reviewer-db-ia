@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     resilient_model = resilient(model, args.llm_retries)
     pipeline_graph = build_pipeline_graph(
         reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
-        coherence_agent     = CoherenceAgent(resilient_model),
+        coherence_agent     = CoherenceAgent(model, retries=args.llm_retries),
         mini_reporter_agent = MiniReporterAgent(resilient_model),
         reporter_agent      = ReporterAgent(resilient_model) if not args.skip_reporter else None,
         max_tool_rounds     = args.max_tool_rounds,
