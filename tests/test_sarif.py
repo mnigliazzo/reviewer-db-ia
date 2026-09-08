@@ -13,7 +13,10 @@ def _review(root: Path, name: str, findings: list[Finding]) -> ScriptReview:
 
 
 def _f(prioridad: str, **kw) -> Finding:
-    base = dict(prioridad=prioridad, categoria="Seguridad", skill="sql-code-review", titulo="t")
+    base = {
+        "prioridad": prioridad, "categoria": "Seguridad", "skill": "sql-code-review",
+        "titulo": "t", "riesgo": "r", "recomendacion": "fix",
+    }
     base.update(kw)
     return Finding(**base)
 

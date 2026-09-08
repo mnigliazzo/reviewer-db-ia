@@ -11,7 +11,7 @@ cd "$SCRIPT_DIR"
 _allowed_key() {
     case "$1" in
         PROVIDER|MODEL_BASE_URL|BASE_URL|MODEL_AGENT|MODEL_AGENTS|API_KEY|LOG_LEVEL| \
-        SCRIPTS_PATH|REVIEW_SCRIPTS_PATH|SKIP_REPORTER|REVIEWER_MAX_TOOL_ROUNDS| \
+        SCRIPTS_PATH|REVIEW_SCRIPTS_PATH|SKIP_REPORTER|REVIEWER_MAX_SKILL_CALLS| \
         REVIEWER_MAX_SCHEMA_SCRIPTS|REVIEWER_FAIL_ON|REVIEWER_LLM_TIMEOUT| \
         REVIEWER_LLM_RETRIES|REVIEWER_SARIF) return 0 ;;
         *) return 1 ;;
@@ -53,7 +53,7 @@ MODEL="${MODEL_AGENTS:-${MODEL_AGENT:-qwen2.5-coder}}"
 MODEL="$(printf '%s' "$MODEL" | xargs)"                   # trim
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 SCRIPTS_PATH="${SCRIPTS_PATH:-${REVIEW_SCRIPTS_PATH:-$SCRIPT_DIR/tmp/db-script}}"
-MAX_TOOL_ROUNDS="${REVIEWER_MAX_TOOL_ROUNDS:-0}"
+MAX_SKILL_CALLS="${REVIEWER_MAX_SKILL_CALLS:-0}"
 MAX_SCHEMA_SCRIPTS="${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}"
 FAIL_ON="${REVIEWER_FAIL_ON:-CRÍTICO}"
 LLM_TIMEOUT="${REVIEWER_LLM_TIMEOUT:-120}"
@@ -73,7 +73,7 @@ set -- -m src.main \
     --provider           "$PROVIDER" \
     --base-url           "$BASE_URL" \
     --model-agent        "$MODEL" \
-    --max-tool-rounds    "$MAX_TOOL_ROUNDS" \
+    --max-skill-calls    "$MAX_SKILL_CALLS" \
     --max-schema-scripts "$MAX_SCHEMA_SCRIPTS" \
     --fail-on            "$FAIL_ON" \
     --llm-timeout        "$LLM_TIMEOUT" \

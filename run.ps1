@@ -10,7 +10,7 @@ Set-Location $ScriptDir
 $AllowKeys = @(
     'PROVIDER', 'MODEL_BASE_URL', 'BASE_URL', 'MODEL_AGENT', 'MODEL_AGENTS',
     'API_KEY', 'LOG_LEVEL', 'SCRIPTS_PATH', 'REVIEW_SCRIPTS_PATH', 'SKIP_REPORTER',
-    'REVIEWER_MAX_TOOL_ROUNDS', 'REVIEWER_MAX_SCHEMA_SCRIPTS',
+    'REVIEWER_MAX_SKILL_CALLS', 'REVIEWER_MAX_SCHEMA_SCRIPTS',
     'REVIEWER_FAIL_ON', 'REVIEWER_LLM_TIMEOUT', 'REVIEWER_LLM_RETRIES', 'REVIEWER_SARIF'
 )
 
@@ -47,7 +47,7 @@ $BaseUrl          = Def $env:MODEL_BASE_URL  (Def $env:BASE_URL 'http://localhos
 $Model            = Def $env:MODEL_AGENTS    (Def $env:MODEL_AGENT 'qwen2.5-coder')
 $LogLevel         = Def $env:LOG_LEVEL       'INFO'
 $ScriptsPath      = Def $env:SCRIPTS_PATH    (Def $env:REVIEW_SCRIPTS_PATH (Join-Path $ScriptDir 'tmp/db-script'))
-$MaxToolRounds    = Def $env:REVIEWER_MAX_TOOL_ROUNDS    '0'
+$MaxSkillCalls    = Def $env:REVIEWER_MAX_SKILL_CALLS    '0'
 $MaxSchemaScripts = Def $env:REVIEWER_MAX_SCHEMA_SCRIPTS '0'
 $FailOn           = Def $env:REVIEWER_FAIL_ON            'CRÍTICO'
 $LlmTimeout       = Def $env:REVIEWER_LLM_TIMEOUT        '120'
@@ -66,7 +66,7 @@ $cliArgs = @(
     '--provider',           $Provider,
     '--base-url',           $BaseUrl,
     '--model-agent',        $Model,
-    '--max-tool-rounds',    $MaxToolRounds,
+    '--max-skill-calls',    $MaxSkillCalls,
     '--max-schema-scripts', $MaxSchemaScripts,
     '--fail-on',            $FailOn,
     '--llm-timeout',        $LlmTimeout,

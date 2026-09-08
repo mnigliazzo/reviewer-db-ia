@@ -5,8 +5,8 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..models import ScriptReview, format_review
-from .base import load_prompt, message_text
+from ..models import Prioridad, ScriptReview
+from .base import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +40,12 @@ class MiniReporterAgent:
             f"[{f.prioridad}] {r.script.file.name}: {f.titulo}"
             for r in reviews
             for f in r.result.hallazgos
-            if f.prioridad in ("CRÍTICO", "ALTO")
+            if f.prioridad in (Prioridad.CRITICO, Prioridad.ALTO)
         ]
 
         # ── Resumen narrativo vía LLM ──────────────────────────────────────────
         context = "\n\n".join(
-            f"--- {r.script.file.name} ---\n{format_review(r.result)}" for r in reviews
+            f"--- {r.script.file.name} ---\n{r.result.render()}" for r in reviews
         )
         if coherence_report:
             context += f"\n\n=== COHERENCIA ===\n{coherence_report}"
@@ -55,7 +55,7 @@ class MiniReporterAgent:
             HumanMessage(content=f"Migración: {migration_id}\n\n{context}"),
         ]
         logger.info(f"MiniReporterAgent generando informe para migración {migration_id}")
-        executive_summary = message_text(self._model.invoke(messages)).strip()
+        executive_summary = self._model.invoke(messages).text.strip()
 
         # ── Ensamblar informe ──────────────────────────────────────────────────
         lines = [

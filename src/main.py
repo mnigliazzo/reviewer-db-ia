@@ -7,7 +7,7 @@ from pathlib import Path
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
 from .graph import build_pipeline_graph
 from .llm import CLOUD_PROVIDERS, SUPPORTED_PROVIDERS, build_model, resilient
-from .models import PRIORIDADES, ScriptReview, SqlScript
+from .models import Prioridad, ScriptReview, SqlScript
 from .sarif import to_sarif
 
 logger = logging.getLogger(__name__)
@@ -45,15 +45,6 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     return scripts
 
 
-def _read_text(path: Path) -> str | None:
-    """Lee un archivo SQL como UTF-8. Devuelve ``None`` (y loguea) si falla."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.error(f"No se pudo leer {path}: {exc}")
-        return None
-
-
 def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
     """Agrupa los scripts por migración y precarga su contenido una sola vez.
 
@@ -70,9 +61,7 @@ def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
         forward: list[tuple[SqlScript, str]] = []
         rollback: list[tuple[str, str]] = []
         for s in migration_scripts:
-            content = _read_text(s.file)
-            if content is None:
-                continue
+            content = s.file.read_text(encoding="utf-8")
             if s.is_rollback:
                 rollback.append((s.file.name, content))
             else:
@@ -84,7 +73,7 @@ def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
 def decide_exit(
     all_reviews: list[ScriptReview],
     incoherent_migrations: list[str],
-    fail_on: set[str],
+    fail_on: set[Prioridad],
 ) -> tuple[int, list[str]]:
     """Decide el exit code según la política ``--fail-on`` + rollback incompleto.
 
@@ -117,7 +106,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
     parser.add_argument("--api-key",       type=str,                 help="API key (requerido para providers cloud)")
     parser.add_argument("--skip-reporter",      action="store_true",  help="Omitir informe ejecutivo final")
-    parser.add_argument("--max-tool-rounds",    type=int, default=0, help="Max rondas de tool calls por script (0 = ilimitado)")
+    parser.add_argument("--max-skill-calls",    type=int, default=0, help="Max llamadas a load_skill por agente (0 = ilimitado)")
     parser.add_argument("--max-schema-scripts", type=int, default=0, help="Max scripts previos en el schema context (0 = ilimitado)")
     parser.add_argument("--temperature",        type=float, default=0.0, help="Temperature del modelo (default 0 = determinista)")
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
@@ -131,17 +120,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.provider in CLOUD_PROVIDERS and not args.api_key:
         parser.error(f"--api-key es requerido para el provider '{args.provider}'")
-    if args.max_tool_rounds < 0:
-        parser.error("--max-tool-rounds no puede ser negativo (0 = ilimitado)")
+    if args.max_skill_calls < 0:
+        parser.error("--max-skill-calls no puede ser negativo (0 = ilimitado)")
     if args.max_schema_scripts < 0:
         parser.error("--max-schema-scripts no puede ser negativo (0 = ilimitado)")
     if args.llm_retries < 0:
         parser.error("--llm-retries no puede ser negativo")
 
-    args.fail_on_set = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
-    unknown = args.fail_on_set - set(PRIORIDADES)
+    raw = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
+    valid = {p.value for p in Prioridad}
+    unknown = raw - valid
     if unknown:
-        parser.error(f"--fail-on: prioridades desconocidas {sorted(unknown)}. Válidas: {list(PRIORIDADES)}")
+        parser.error(f"--fail-on: prioridades desconocidas {sorted(unknown)}. Válidas: {sorted(valid)}")
+    args.fail_on_set = {Prioridad(p) for p in raw}
     return args
 
 
@@ -176,12 +167,12 @@ def main(argv: list[str] | None = None) -> int:
         temperature=args.temperature, timeout=args.llm_timeout,
     )
     resilient_model = resilient(model, args.llm_retries)
+    agent_kwargs = {"max_skill_calls": args.max_skill_calls, "retries": args.llm_retries}
     pipeline_graph = build_pipeline_graph(
-        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
-        coherence_agent     = CoherenceAgent(model, retries=args.llm_retries),
+        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, **agent_kwargs),
+        coherence_agent     = CoherenceAgent(model, SKILLS_BASE_PATH, **agent_kwargs),
         mini_reporter_agent = MiniReporterAgent(resilient_model),
         reporter_agent      = ReporterAgent(resilient_model) if not args.skip_reporter else None,
-        max_tool_rounds     = args.max_tool_rounds,
         max_schema_scripts  = args.max_schema_scripts,
     )
 

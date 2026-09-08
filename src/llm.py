@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from langchain_core.runnables import Runnable
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
 SUPPORTED_PROVIDERS = ("ollama", "openai", "openrouter", "groq")
 CLOUD_PROVIDERS = ("openai", "openrouter", "groq")
@@ -25,7 +27,6 @@ def build_model(
     ``resilient()`` porque debe envolver el runnable ya final (con tools o con
     structured output)."""
     if provider == "ollama":
-        from langchain_ollama import ChatOllama
         return ChatOllama(
             base_url=base_url,
             model=model,
@@ -34,10 +35,11 @@ def build_model(
             client_kwargs={"timeout": timeout},
         )
     if provider in CLOUD_PROVIDERS:
-        from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             base_url=base_url or PROVIDER_DEFAULT_URLS[provider],
             model=model,
+            # ChatOpenAI exige api_key; los endpoints locales OpenAI-compatibles
+            # no la piden pero igual hay que pasar algo.
             api_key=api_key or "sk-no-key",
             temperature=temperature,
             timeout=timeout,

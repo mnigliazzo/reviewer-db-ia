@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langchain_core.messages import BaseMessage
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRetryMiddleware, ToolCallLimitMiddleware
+from langchain_core.language_models import BaseChatModel
+
+from ..skills import Skill, make_load_skill_tool, skills_header
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
@@ -16,26 +20,34 @@ def load_prompt(filename: str) -> str:
     return (_PROMPTS_DIR / filename).read_text(encoding="utf-8").rstrip() + "\n\n"
 
 
-def message_text(response: object) -> str:
-    """Normaliza el ``content`` de una respuesta del LLM a ``str``.
+def build_skill_agent(
+    model: BaseChatModel,
+    skills: list[Skill],
+    *,
+    system_prompt_file: str,
+    response_format: type,
+    max_skill_calls: int,
+    retries: int,
+):
+    """Agente ``create_agent`` de dos fases: carga skills con ``load_skill`` y
+    devuelve ``response_format`` como salida estructurada.
 
-    Los providers OpenAI-compatibles pueden devolver ``content`` como una lista
-    de bloques (``[{"type": "text", "text": "..."}, ...]``) en vez de un string
-    plano. Esta función acepta un ``BaseMessage``, un string, o una lista de
-    bloques y siempre devuelve texto.
+    Lo comparten ``ReviewerAgent`` y ``CoherenceAgent``; sólo cambian el prompt
+    de sistema y el schema de salida.
     """
-    content = response.content if isinstance(response, BaseMessage) else response
-
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                parts.append(str(block.get("text") or block.get("content") or ""))
-        return "".join(parts)
-    return str(content)
+    middleware = []
+    if retries > 0:
+        middleware.append(ModelRetryMiddleware(max_retries=retries))
+    if max_skill_calls > 0:
+        middleware.append(ToolCallLimitMiddleware(
+            tool_name="load_skill",
+            thread_limit=max_skill_calls,
+            exit_behavior="continue",
+        ))
+    return create_agent(
+        model,
+        tools=[make_load_skill_tool(skills)],
+        system_prompt=load_prompt(system_prompt_file) + skills_header(skills),
+        response_format=response_format,
+        middleware=middleware,
+    )

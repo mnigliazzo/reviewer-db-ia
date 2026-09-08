@@ -5,7 +5,7 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .base import load_prompt, message_text
+from .base import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -38,4 +38,4 @@ class ReporterAgent:
         ]
 
         logger.info("ReporterAgent generando informe ejecutivo final")
-        return message_text(self._model.invoke(messages))
+        return self._model.invoke(messages).text

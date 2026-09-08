@@ -30,12 +30,12 @@ cp .env.example .env      # then fill in values
 # Direct invocation (what the scripts build up)
 python -m src.main --scripts-path <ROOT> --base-url <URL> --model-agent <MODEL> \
     [--provider ollama|openai|openrouter|groq] [--api-key KEY] [--skip-reporter] \
-    [--max-tool-rounds N] [--max-schema-scripts N] [--log-level INFO] \
+    [--max-skill-calls N] [--max-schema-scripts N] [--log-level INFO] \
     [--temperature 0.0] [--llm-timeout 120] [--llm-retries 2] \
     [--fail-on CRÍTICO[,ALTO,...]] [--sarif PATH]
 ```
 
-`--scripts-path`, `--base-url`, `--model-agent` are required. `--max-tool-rounds 0` and
+`--scripts-path`, `--base-url`, `--model-agent` are required. `--max-skill-calls 0` and
 `--max-schema-scripts 0` mean *unlimited* (not "disabled"). `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
@@ -110,82 +110,92 @@ goes to `global_reporter`. Forward scripts already reviewed accumulate in
 **Migration graph** (`MigrationState`) — per migration:
 `fan_out` → parallel `review_script` workers (one `Send` per forward script) → `gather`
 fan-in → route to `escalate` if any worker set `has_critical`, else `coherence` →
-`mini_reporter`. Parallel-worker state is merged with `operator.add` / boolean-OR
-reducers. Each `review_script` worker is **two-phase** (in `graph.py`):
-1. `_load_skills_loop` — repeatedly invokes `model_with_tools`, executes any
-   `load_skill` tool calls, stops when the model asks for no more tools or
-   `--max-tool-rounds` is hit. Returns the skill names loaded.
-2. `reviewer.finalize(messages)` — one tool-less call via `with_structured_output`
-   that returns a validated `ReviewOutput` (scores + `hallazgos`). No text parsing.
+`mini_reporter`. Parallel-worker state is merged with `operator.add` / `operator.or_`
+reducers. `review_script` calls `reviewer.review(...)` and `coherence_node` calls
+`coherence_agent.analyze(...)`; each is a single LangChain **`create_agent`** run that
+loads skills via the `load_skill` tool and then returns the structured schema
+(`ReviewOutput` / `CoherenceOutput`) as `result["structured_response"]`. No hand-rolled
+tool loop, no text parsing.
 
-The whole worker body is wrapped in try/except — a crashing review (LLM error,
-schema-validation failure) yields the synthetic `_REVIEW_FALLO` `OBSERVACION` finding
-and the pipeline continues; it does **not** set `has_critical`, so it doesn't gate the
-merge. `coherence_node` is fail-safe: on exception it returns
-`coherence_approved=False` (an unverifiable rollback blocks). `mini_reporter_node` /
-`global_reporter_node` swallow exceptions into a placeholder string (the reports are
-informational).
+There is no per-node safety net around the review or coherence work: a crashing review
+or coherence check (LLM error, schema-`ValidationError`) propagates out of the node and
+aborts the whole run with a non-zero exit — no synthetic `_REVIEW_FALLO` finding, no
+fail-safe not-approved. A genuine `INCOMPLETO` veredicto still flows through normally
+(`coherence_approved=False` → exit 1 with a clean message); only *exceptions* now crash.
+Only `mini_reporter_node` / `global_reporter_node` still swallow exceptions into a
+placeholder string — the reports are informational and never gate the merge.
 
 ### Agents (`src/agents/`)
 
-- **`ReviewerAgent`** — reviews one script. Binds the `load_skill` tool for phase 1
-  and exposes `finalize()` (phase 2) which calls `model.with_structured_output(
-  ReviewOutput)`. System prompt = `reviewer_system.md` + a generated skills header.
-  All runnables are wrapped with `llm.resilient()` (retry + backoff).
+- **`ReviewerAgent`** — reviews one script. `review(script, sql, schema_context)` runs a
+  `create_agent` (tool: `load_skill`, `response_format=ReviewOutput`) and returns a
+  `ReviewResult` (`ReviewOutput` + `skill_calls(messages)`). System prompt =
+  `reviewer_system.md` + a generated skills header.
 - **`CoherenceAgent`** — runs once per migration; checks the rollback reverts the
-  forward. One `model.with_structured_output(CoherenceOutput)` call (no text parsing) —
-  `CoherenceOutput.veredicto` is normalized to `COHERENTE` / `INCOMPLETO` (anything not
-  exactly `COHERENTE` → `INCOMPLETO`, and that's also the default), and
-  `.approved` is `veredicto == "COHERENTE"`. `format_coherence()` renders the
-  human-readable report (logged + fed to the MiniReporter) from the structured fields.
+  forward. `analyze(migration, forward, rollback)` — same `create_agent` shape with
+  `response_format=CoherenceOutput`. The
+  rollback-completeness criteria live in the `rollback-coherence` skill, not the prompt.
+  `CoherenceOutput.veredicto` is the strict `Veredicto` `StrEnum` (no Python
+  normalization; an off-enum value is a `ValidationError` that propagates out of
+  `coherence_node` and aborts the run); `.approved` is `veredicto is Veredicto.COHERENTE`. `CoherenceOutput.render()`
+  produces the report (logged + fed to the MiniReporter) from the structured fields.
+  `coherence_node` short-circuits to approved when a migration has no forward scripts.
 - **`MiniReporterAgent`** — per-migration report: metrics computed in Python from
   structured findings + an LLM narrative summary, assembled into a fixed text layout.
 - **`ReporterAgent`** — final executive report consolidating the mini-reports;
   skipped entirely with `--skip-reporter`.
 
 `MiniReporterAgent` / `ReporterAgent` receive the model already wrapped by
-`llm.resilient()` from `main.py`; `ReviewerAgent` and `CoherenceAgent` get the bare
-model plus a `retries` int (they must `bind_tools` / `with_structured_output` first,
-then wrap).
+`llm.resilient()` from `main.py` and consume a free-form reply with `response.text`
+(langchain-core native). `ReviewerAgent` / `CoherenceAgent` get the bare model plus
+`SKILLS_BASE_PATH`, `max_skill_calls` and `retries`; `agents/base.build_skill_agent`
+wires those into `create_agent` (`ModelRetryMiddleware` for `retries`,
+`ToolCallLimitMiddleware` on `load_skill` when `max_skill_calls > 0`). `load_prompt`
+(the only remaining helper in `agents/base.py`) loads a plain-text prompt from
+`src/prompts/`.
 
-All agents share `load_prompt` and `message_text` from `src/agents/base.py` and load a
-plain-text prompt from `src/prompts/`. `message_text` normalizes an LLM response's
-`content` (which some OpenAI-compatible providers return as a list of blocks) to `str`;
-use it everywhere a free-form `.content` is consumed.
+### Skills system (`src/skills.py`)
 
-### Skills system (`src/skill_middleware.py`)
-
-`load_skills_from_disk` reads `src/skills/*/SKILL.md` (YAML frontmatter with
-`name` / `description`). Only the descriptions go into the reviewer's system prompt;
-full skill bodies are pulled in on demand when the model calls the `load_skill`
-tool. To add review guidance, add a new `SKILL.md` folder here.
+`load_skills` reads `src/skills/*/SKILL.md` (YAML frontmatter parsed with `yaml.safe_load`,
+`name` / `description`) into frozen `Skill` dataclasses. Both agents load the whole
+`src/skills/` folder — descriptions go into the system prompt, full bodies are pulled in
+on demand via the `load_skill` tool (`make_load_skill_tool`; an unknown name raises
+`ValueError`, which `create_agent`'s default `ToolErrorMiddleware` feeds back to the
+model). `skill_calls(messages)` extracts which skills a run actually loaded. The model
+picks the relevant ones (`sql-code-review` / `sql-optimization` for the reviewer,
+`rollback-coherence` for coherence). To add guidance for either agent, add a new
+`SKILL.md` folder here.
 
 ### Review output is a Pydantic schema (`src/models.py`)
 
-No text parsing. `Finding` and `ReviewOutput` (scores 0-10 + `hallazgos`) are the schema
-handed to `model.with_structured_output()`. `ReviewResult = ReviewOutput +
-skills_utilizadas` (added by the worker, not the LLM); build it with
-`ReviewResult.from_output(output, skills)`. `Finding.prioridad` is a `Literal` of
-`CRÍTICO ALTO MEDIO BAJO MEJORA OBSERVACION` — an out-of-set value is a pydantic
-`ValidationError` (→ caught by the worker → `_REVIEW_FALLO`). `Finding.linea: int | None`
-feeds the SARIF region. `format_review()` renders a `ReviewResult` to text for logs and
-the MiniReporter's LLM context.
+No text parsing, **and no tolerant normalization** — the schemas are strict; a mismatch
+is a pydantic `ValidationError` that propagates out of the node and aborts the run (no
+`_REVIEW_FALLO`, no fail-safe not-approved). `ReviewOutput` is the `create_agent`
+`response_format`. `ReviewResult = ReviewOutput + skills_utilizadas`
+(added by the worker, not the LLM); build it with `ReviewResult.from_output(output,
+skills)` (no filtering — an empty finding can't exist, the fields are required).
+`Finding.prioridad` is the `Prioridad` `StrEnum` (`CRÍTICO ALTO MEDIO BAJO MEJORA
+OBSERVACION`); `titulo` / `riesgo` / `recomendacion` are required (`min_length=1`);
+scores are `int` with `ge=0, le=10`. No aliases, no clamping — `"ALTA"`, `11`, `""` all
+raise. `Finding.linea: int | None` feeds the SARIF region. `ReviewResult.render()` /
+`Finding.render()` produce the text for logs and the MiniReporter's LLM context.
 
-`CoherenceOutput` (same module) is the `with_structured_output` schema for
+`CoherenceOutput` (same module) is the `create_agent` `response_format` for
 `CoherenceAgent`: `resumen_forward` / `resumen_rollback` / `analisis_coherencia` prose
-+ `veredicto` (normalized `COHERENTE` / `INCOMPLETO`, `.approved` helper) +
-`operaciones_sin_revertir`. `format_coherence()` renders it to the report text.
+(optional, `default=""`) + `veredicto` (the `Veredicto` `StrEnum` `COHERENTE` /
+`INCOMPLETO`, default `INCOMPLETO`, `.approved` helper) + `operaciones_sin_revertir`.
+`.render()` produces the report text.
 
 `reviewer_system.md` describes these fields to the model and carries a long numbered
 "PROHIBIDO REPORTAR" list of known false positives — extend that list rather than
-post-filtering findings in Python. There is no format contract to keep in lockstep any
-more; only the field names / `Literal` values matter.
+post-filtering findings in Python. Only the field names / enum values matter.
 
 ### SARIF (`src/sarif.py`)
 
 `--sarif PATH` → `to_sarif(all_reviews, incoherent_migrations, scripts_root)` builds a
-SARIF 2.1.0 doc. prioridad → level: CRÍTICO/ALTO=`error`, MEDIO/BAJO=`warning`,
-MEJORA/OBSERVACION=`note`. Each finding is a `result` located at the script's path
+SARIF 2.1.0 doc. The prioridad → level map lives on `Prioridad.sarif_level`
+(CRÍTICO/ALTO=`error`, MEDIO/BAJO=`warning`, MEJORA/OBSERVACION=`note`). Each finding is
+a `result` located at the script's path
 relative to `--scripts-path`, `region.startLine` = `finding.linea or 1`. Each incoherent
 migration adds a `rollback/incompleto` `error` result. It's the only machine-readable
 output — no custom JSON.
@@ -203,6 +213,7 @@ optimization); it does not decide the exit code.
 `ollama` (default, `ChatOllama`, `num_ctx=16384`, `client_kwargs={"timeout": …}`) or any
 OpenAI-compatible endpoint (`openai` / `openrouter` / `groq` via `ChatOpenAI`,
 `max_retries=0`, default URLs in `PROVIDER_DEFAULT_URLS`). `resilient(runnable, retries)`
-wraps the final runnable with `with_retry(stop_after_attempt=retries+1,
-wait_exponential_jitter=True)` — applied after `bind_tools` / `with_structured_output`,
-never before.
+wraps a runnable with `with_retry(stop_after_attempt=retries+1,
+wait_exponential_jitter=True)`; it's used for the two reporter agents' plain `.invoke()`
+calls. `ReviewerAgent` / `CoherenceAgent` don't use it — their retry is
+`ModelRetryMiddleware` inside `create_agent`.

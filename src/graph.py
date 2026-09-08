@@ -4,33 +4,15 @@ import logging
 import operator
 from typing import Annotated
 
-from langchain_core.messages import ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from typing_extensions import TypedDict
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
 from .logging_utils import banner
-from .models import Finding, ReviewResult, ScriptReview, format_review
+from .models import ScriptReview
 
 logger = logging.getLogger(__name__)
-
-_REVIEW_FALLO = ReviewResult(
-    seguridad=0,
-    rendimiento=0,
-    mantenibilidad=0,
-    hallazgos=[Finding(
-        prioridad="OBSERVACION",
-        categoria="pipeline",
-        skill="-",
-        titulo="No se pudo completar el review automático de este script",
-        riesgo="El script no fue analizado por el revisor. Revisar manualmente.",
-    )],
-)
-
-
-def _bool_or(a: bool, b: bool) -> bool:
-    return a or b
 
 
 # ── Per-migration state ────────────────────────────────────────────────────────
@@ -42,7 +24,7 @@ class MigrationState(TypedDict):
     rollback_scripts_data: list                           # pre-cargado, solo para coherence
     reviews: Annotated[list, operator.add]                # mergeado de workers paralelos
     forward_scripts_data: Annotated[list, operator.add]   # mergeado de workers paralelos
-    has_critical: Annotated[bool, _bool_or]               # OR de todos los workers
+    has_critical: Annotated[bool, operator.or_]           # OR de todos los workers
     coherence_report: str
     coherence_approved: bool
     mini_report: str
@@ -52,7 +34,6 @@ def build_migration_graph(
     reviewer: ReviewerAgent,
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
-    max_tool_rounds: int = 0,
 ):
     def fan_out_fn(state: MigrationState):
         scripts = state.get("scripts_to_review", [])
@@ -68,61 +49,19 @@ def build_migration_graph(
             for script, sql_content in scripts
         ]
 
-    def _load_skills_loop(messages: list) -> list[str]:
-        """Fase 1: deja que el modelo cargue skills con load_skill().
-
-        Muta ``messages`` in-place agregando las respuestas del modelo y los
-        ToolMessage. Devuelve los nombres de las skills cargadas. Corta cuando el
-        modelo deja de pedir herramientas o al llegar a ``max_tool_rounds``.
-        """
-        skills_used: list[str] = []
-        rounds = 0
-        while max_tool_rounds == 0 or rounds < max_tool_rounds:
-            rounds += 1
-            response = reviewer.model_with_tools.invoke(messages)
-            messages.append(response)
-            tool_calls = getattr(response, "tool_calls", None)
-            if not tool_calls:
-                return skills_used
-            for tc in tool_calls:
-                args = tc.get("args", {}) or {}
-                name = (args.get("skill_name") or "").strip()
-                try:
-                    tool_result = reviewer.load_skill_tool.invoke(args)
-                except Exception as exc:  # noqa: BLE001 - queremos seguir el loop
-                    logger.warning(f"Fallo cargando skill {name!r}: {exc}")
-                    tool_result = f"Error cargando skill '{name}': {exc}"
-                if name and name not in skills_used:
-                    skills_used.append(name)
-                messages.append(ToolMessage(content=tool_result, tool_call_id=tc["id"]))
-
-        logger.warning(f"max_tool_rounds ({max_tool_rounds}) alcanzado en carga de skills.")
-        return skills_used
-
     def review_script_node(worker: dict) -> dict:
         """Worker paralelo: carga skills y pide el review estructurado de un script."""
         script = worker["script"]
         sql_content = worker["sql_content"]
-        ref = f"{worker['migration_id']}/{script.file.name}"
 
-        logger.info(f"Reviewing: {ref}")
+        logger.info(f"Reviewing: {worker['migration_id']}/{script.file.name}")
 
-        try:
-            messages = reviewer.build_messages(
-                script, sql_content, worker.get("schema_context", "")
-            )
-            skills_used = _load_skills_loop(messages)
-            output = reviewer.finalize(messages)
-            result = ReviewResult.from_output(output, skills_used)
-        except Exception:  # noqa: BLE001 - un worker no debe tumbar el pipeline
-            logger.exception(f"El review de {ref} falló")
-            result = _REVIEW_FALLO.model_copy(deep=True)
-
+        result = reviewer.review(script, sql_content, worker.get("schema_context", ""))
         sr = ScriptReview(script=script, result=result)
 
         banner(logger, f"REVIEW: {script.file.name}")
         logger.info(f"Skills usadas: {', '.join(result.skills_utilizadas) or 'ninguna'}")
-        logger.info(format_review(result))
+        logger.info(result.render())
 
         return {
             "reviews": [sr],
@@ -139,23 +78,19 @@ def build_migration_graph(
 
     def coherence_node(state: MigrationState) -> dict:
         mid = state["migration_id"]
-        try:
-            result = coherence_agent.analyze(
-                mid,
-                state.get("forward_scripts_data", []),
-                state.get("rollback_scripts_data", []),
-            )
-        except Exception:  # noqa: BLE001 - no verificable => no aprobado (fail-safe)
-            logger.exception(f"El análisis de coherencia de {mid} falló")
+        forward = state.get("forward_scripts_data", [])
+        if not forward:
             return {
-                "coherence_report": "ERROR: no se pudo verificar la coherencia del rollback.",
-                "coherence_approved": False,
+                "coherence_report": f"MIGRACION: {mid}\n\nNo hay scripts de despliegue forward para analizar.",
+                "coherence_approved": True,
             }
+        output = coherence_agent.analyze(mid, forward, state.get("rollback_scripts_data", []))
+        report = output.render()
         banner(logger, f"COHERENCIA: {mid}", "~")
-        logger.info(result.report)
-        if not result.approved:
+        logger.info(report)
+        if not output.approved:
             logger.warning(f"Rollback incompleto detectado en migración {mid}")
-        return {"coherence_report": result.report, "coherence_approved": result.approved}
+        return {"coherence_report": report, "coherence_approved": output.approved}
 
     def mini_reporter_node(state: MigrationState) -> dict:
         mid = state["migration_id"]
@@ -225,10 +160,9 @@ def build_pipeline_graph(
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
     reporter_agent: ReporterAgent | None = None,
-    max_tool_rounds: int = 0,
     max_schema_scripts: int = 0,
 ):
-    migration_graph = build_migration_graph(reviewer, coherence_agent, mini_reporter_agent, max_tool_rounds)
+    migration_graph = build_migration_graph(reviewer, coherence_agent, mini_reporter_agent)
 
     def run_migration_node(state: PipelineState) -> dict:
         queue = list(state["migrations_queue"])

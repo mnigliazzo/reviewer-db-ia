@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import Finding, ScriptReview
+from .models import Finding, Prioridad, ScriptReview
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
@@ -11,20 +11,9 @@ SARIF_SCHEMA = (
 )
 TOOL_NAME = "reviewer-db-ia"
 
-# prioridad -> nivel SARIF
-_LEVEL = {
-    "CRÍTICO": "error",
-    "ALTO": "error",
-    "MEDIO": "warning",
-    "BAJO": "warning",
-    "MEJORA": "note",
-    "OBSERVACION": "note",
-}
-
 
 def _rule_id(f: Finding) -> str:
-    skill = (f.skill or "").strip()
-    cat = (f.categoria or "general").strip()
+    skill, cat = f.skill.strip(), f.categoria.strip()
     return f"{skill}/{cat}" if skill and skill != "-" else cat
 
 
@@ -36,18 +25,14 @@ def _rel_uri(path: Path, root: Path) -> str:
 
 
 def _finding_result(f: Finding, uri: str) -> dict:
-    text = f.titulo
-    if f.riesgo:
-        text += f"\nRiesgo: {f.riesgo}"
-    if f.recomendacion:
-        text += f"\nRecomendación: {f.recomendacion}"
+    text = f"{f.titulo}\nRiesgo: {f.riesgo}\nRecomendación: {f.recomendacion}"
     if f.ubicacion:
         text += f"\nUbicación: {f.ubicacion}"
 
     region = {"startLine": f.linea if f.linea and f.linea > 0 else 1}
     return {
         "ruleId": _rule_id(f),
-        "level": _LEVEL.get(f.prioridad, "warning"),
+        "level": f.prioridad.sarif_level,
         "message": {"text": text},
         "locations": [{
             "physicalLocation": {
@@ -55,7 +40,7 @@ def _finding_result(f: Finding, uri: str) -> dict:
                 "region": region,
             }
         }],
-        "properties": {"prioridad": f.prioridad, "skill": f.skill, "categoria": f.categoria},
+        "properties": {"prioridad": f.prioridad.value, "skill": f.skill, "categoria": f.categoria},
     }
 
 
@@ -70,7 +55,7 @@ def _incoherent_result(migration_id: str) -> dict:
         "locations": [{
             "physicalLocation": {"artifactLocation": {"uri": f"{migration_id}/"}}
         }],
-        "properties": {"prioridad": "CRÍTICO", "categoria": "Rollback"},
+        "properties": {"prioridad": Prioridad.CRITICO.value, "categoria": "Rollback"},
     }
 
 
