@@ -106,7 +106,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
     parser.add_argument("--api-key",       type=str,                 help="API key (requerido para providers cloud)")
     parser.add_argument("--skip-reporter",      action="store_true",  help="Omitir informe ejecutivo final")
-    parser.add_argument("--max-skill-calls",    type=int, default=0, help="Max llamadas a load_skill por agente (0 = ilimitado)")
     parser.add_argument("--max-schema-scripts", type=int, default=0, help="Max scripts previos en el schema context (0 = ilimitado)")
     parser.add_argument("--temperature",        type=float, default=0.0, help="Temperature del modelo (default 0 = determinista)")
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
@@ -120,8 +119,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.provider in CLOUD_PROVIDERS and not args.api_key:
         parser.error(f"--api-key es requerido para el provider '{args.provider}'")
-    if args.max_skill_calls < 0:
-        parser.error("--max-skill-calls no puede ser negativo (0 = ilimitado)")
     if args.max_schema_scripts < 0:
         parser.error("--max-schema-scripts no puede ser negativo (0 = ilimitado)")
     if args.llm_retries < 0:
@@ -167,10 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         temperature=args.temperature, timeout=args.llm_timeout,
     )
     resilient_model = resilient(model, args.llm_retries)
-    agent_kwargs = {"max_skill_calls": args.max_skill_calls, "retries": args.llm_retries}
     pipeline_graph = build_pipeline_graph(
-        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, **agent_kwargs),
-        coherence_agent     = CoherenceAgent(model, SKILLS_BASE_PATH, **agent_kwargs),
+        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
+        coherence_agent     = CoherenceAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
         mini_reporter_agent = MiniReporterAgent(resilient_model),
         reporter_agent      = ReporterAgent(resilient_model) if not args.skip_reporter else None,
         max_schema_scripts  = args.max_schema_scripts,

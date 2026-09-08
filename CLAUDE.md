@@ -30,13 +30,13 @@ cp .env.example .env      # then fill in values
 # Direct invocation (what the scripts build up)
 python -m src.main --scripts-path <ROOT> --base-url <URL> --model-agent <MODEL> \
     [--provider ollama|openai|openrouter|groq] [--api-key KEY] [--skip-reporter] \
-    [--max-skill-calls N] [--max-schema-scripts N] [--log-level INFO] \
+    [--max-schema-scripts N] [--log-level INFO] \
     [--temperature 0.0] [--llm-timeout 120] [--llm-retries 2] \
     [--fail-on CRÍTICO[,ALTO,...]] [--sarif PATH]
 ```
 
-`--scripts-path`, `--base-url`, `--model-agent` are required. `--max-skill-calls 0` and
-`--max-schema-scripts 0` mean *unlimited* (not "disabled"). `--fail-on` (default
+`--scripts-path`, `--base-url`, `--model-agent` are required. `--max-schema-scripts 0`
+means *unlimited* (not "disabled"). `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
 machine-readable output). `run.sh` / `run.ps1` expose these as `REVIEWER_FAIL_ON`,
@@ -148,11 +148,10 @@ placeholder string — the reports are informational and never gate the merge.
 `MiniReporterAgent` / `ReporterAgent` receive the model already wrapped by
 `llm.resilient()` from `main.py` and consume a free-form reply with `response.text`
 (langchain-core native). `ReviewerAgent` / `CoherenceAgent` get the bare model plus
-`SKILLS_BASE_PATH`, `max_skill_calls` and `retries`; `agents/base.build_skill_agent`
-wires those into `create_agent` (`ModelRetryMiddleware` for `retries`,
-`ToolCallLimitMiddleware` on `load_skill` when `max_skill_calls > 0`). `load_prompt`
-(the only remaining helper in `agents/base.py`) loads a plain-text prompt from
-`src/prompts/`.
+`SKILLS_BASE_PATH` and `retries`; `agents/base.build_skill_agent` wires that into
+`create_agent` (`ModelRetryMiddleware` when `retries > 0`, nothing otherwise — the
+`load_skill` loop is bounded by langgraph's `recursion_limit`). `load_prompt` (the only
+other helper in `agents/base.py`) loads a plain-text prompt from `src/prompts/`.
 
 ### Skills system (`src/skills.py`)
 
