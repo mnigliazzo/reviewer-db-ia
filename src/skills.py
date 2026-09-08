@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
+import frontmatter
 from langchain_core.messages import AnyMessage
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
-
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n(.*)", re.DOTALL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,15 +27,14 @@ def load_skills(base_path: Path | str) -> list[Skill]:
 
     skills: list[Skill] = []
     for skill_file in sorted(path.glob("*/SKILL.md")):
-        match = _FRONTMATTER_RE.match(skill_file.read_text(encoding="utf-8"))
-        if not match:
+        post = frontmatter.loads(skill_file.read_text(encoding="utf-8"))
+        if not post.metadata:
             logger.warning(f"{skill_file} no tiene frontmatter YAML — se omite")
             continue
-        meta = yaml.safe_load(match.group(1)) or {}
         skills.append(Skill(
-            name=meta.get("name", skill_file.parent.name),
-            description=meta.get("description", ""),
-            content=match.group(2).strip(),
+            name=post.get("name", skill_file.parent.name),
+            description=post.get("description", ""),
+            content=post.content.strip(),
         ))
 
     logger.info("Skills cargadas: %s", ", ".join(s.name for s in skills) or "ninguna")

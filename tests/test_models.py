@@ -59,14 +59,6 @@ def test_from_output_mergea_skills_sin_filtrar_hallazgos():
     assert len(res.hallazgos) == 2
 
 
-def test_has_critical():
-    assert ReviewResult(
-        seguridad=1, rendimiento=1, mantenibilidad=1,
-        hallazgos=[_finding(prioridad="CRÍTICO")],
-    ).has_critical is True
-    assert ReviewResult(seguridad=9, rendimiento=9, mantenibilidad=9).has_critical is False
-
-
 def test_render_sin_hallazgos():
     txt = ReviewResult(seguridad=9, rendimiento=8, mantenibilidad=7).render()
     assert "9/10" in txt and "Sin hallazgos." in txt

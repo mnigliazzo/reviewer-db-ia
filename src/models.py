@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from statistics import mean
 
 from pydantic import BaseModel, Field
 
@@ -81,10 +82,6 @@ class ReviewResult(ReviewOutput):
     """``ReviewOutput`` + los datos que agrega el pipeline (no los pone el LLM)."""
 
     skills_utilizadas: list[str] = Field(default_factory=list)
-
-    @property
-    def has_critical(self) -> bool:
-        return any(f.prioridad is Prioridad.CRITICO for f in self.hallazgos)
 
     @classmethod
     def from_output(cls, output: ReviewOutput, skills_utilizadas: list[str]) -> ReviewResult:
@@ -169,6 +166,69 @@ class ScriptReview:
     script: SqlScript
     result: ReviewResult
 
-    @property
-    def skills_used(self) -> list[str]:
-        return self.result.skills_utilizadas
+
+@dataclass
+class MigrationReport:
+    """Informe de una migración: métricas calculadas en Python desde los hallazgos
+    estructurados + el resumen narrativo del LLM. No es un schema de salida del LLM."""
+
+    migration_id: str
+    scripts_revisados: int
+    prom_seguridad: float | None
+    prom_rendimiento: float | None
+    prom_mantenibilidad: float | None
+    rollback_coherente: bool
+    hallazgos_altos: list[str]        # ["[PRIORIDAD] archivo: titulo", ...]
+    resumen_ejecutivo: str
+
+    @classmethod
+    def build(
+        cls,
+        migration_id: str,
+        reviews: list[ScriptReview],
+        coherence: CoherenceOutput | None,
+        resumen_ejecutivo: str,
+    ) -> MigrationReport:
+        def promedio(attr: str) -> float | None:
+            valores = [getattr(r.result, attr) for r in reviews]
+            return round(float(mean(valores)), 1) if valores else None
+
+        return cls(
+            migration_id=migration_id,
+            scripts_revisados=len(reviews),
+            prom_seguridad=promedio("seguridad"),
+            prom_rendimiento=promedio("rendimiento"),
+            prom_mantenibilidad=promedio("mantenibilidad"),
+            rollback_coherente=coherence.approved if coherence else True,
+            hallazgos_altos=[
+                f"[{f.prioridad}] {r.script.file.name}: {f.titulo}"
+                for r in reviews
+                for f in r.result.hallazgos
+                if f.prioridad in (Prioridad.CRITICO, Prioridad.ALTO)
+            ],
+            resumen_ejecutivo=resumen_ejecutivo,
+        )
+
+    def render(self) -> str:
+        """Layout de texto para logs y como input del informe ejecutivo final."""
+        def score(v: float | None) -> str:
+            return f"{v:.1f}/10" if v is not None else "N/A"
+
+        lineas = [
+            f"MIGRACIÓN {self.migration_id}",
+            "",
+            "ESTADISTICAS",
+            f"  Scripts revisados:        {self.scripts_revisados}",
+            f"  Promedio Seguridad:       {score(self.prom_seguridad)}",
+            f"  Promedio Rendimiento:     {score(self.prom_rendimiento)}",
+            f"  Promedio Mantenibilidad:  {score(self.prom_mantenibilidad)}",
+            "",
+            f"ESTADO ROLLBACK: {'COHERENTE' if self.rollback_coherente else 'INCOMPLETO'}",
+            "",
+            "HALLAZGOS CRITICOS Y ALTOS",
+            *([f"  {h}" for h in self.hallazgos_altos] or ["  Ninguno"]),
+            "",
+            "RESUMEN EJECUTIVO",
+            f"  {self.resumen_ejecutivo}",
+        ]
+        return "\n".join(lineas)

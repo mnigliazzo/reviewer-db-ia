@@ -5,71 +5,36 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..models import Prioridad, ScriptReview
+from ..models import CoherenceOutput, MigrationReport, ScriptReview
 from .base import load_prompt
 
 logger = logging.getLogger(__name__)
 
 
 class MiniReporterAgent:
-    """
-    Genera el informe por migración combinando métricas calculadas desde los
-    hallazgos estructurados (Python) con un resumen narrativo del LLM.
-    """
+    """Genera el ``MigrationReport`` de una migración: métricas calculadas desde los
+    hallazgos estructurados + un resumen narrativo del LLM."""
 
     def __init__(self, model: BaseChatModel):
         self._model = model
         self._system_prompt = load_prompt("mini_reporter_system.md")
 
-    def report(
+    def generate(
         self,
         migration_id: str,
         reviews: list[ScriptReview],
-        coherence_report: str,
-        coherence_approved: bool,
-    ) -> str:
-        # ── Métricas desde datos estructurados ────────────────────────────────
-        seg  = [r.result.seguridad      for r in reviews]
-        rend = [r.result.rendimiento    for r in reviews]
-        mant = [r.result.mantenibilidad for r in reviews]
-
-        def avg(scores: list[int]) -> str:
-            return f"{sum(scores) / len(scores):.1f}" if scores else "N/A"
-
-        critical_high = [
-            f"[{f.prioridad}] {r.script.file.name}: {f.titulo}"
-            for r in reviews
-            for f in r.result.hallazgos
-            if f.prioridad in (Prioridad.CRITICO, Prioridad.ALTO)
-        ]
-
-        # ── Resumen narrativo vía LLM ──────────────────────────────────────────
+        coherence: CoherenceOutput | None,
+    ) -> MigrationReport:
         context = "\n\n".join(
             f"--- {r.script.file.name} ---\n{r.result.render()}" for r in reviews
         )
-        if coherence_report:
-            context += f"\n\n=== COHERENCIA ===\n{coherence_report}"
+        if coherence is not None:
+            context += f"\n\n=== COHERENCIA ===\n{coherence.render()}"
 
-        messages = [
+        logger.info(f"MiniReporterAgent generando resumen para migración {migration_id}")
+        resumen = self._model.invoke([
             SystemMessage(content=self._system_prompt),
             HumanMessage(content=f"Migración: {migration_id}\n\n{context}"),
-        ]
-        logger.info(f"MiniReporterAgent generando informe para migración {migration_id}")
-        executive_summary = self._model.invoke(messages).text.strip()
+        ]).text.strip()
 
-        # ── Ensamblar informe ──────────────────────────────────────────────────
-        lines = [
-            "ESTADISTICAS",
-            f"  Scripts revisados:        {len(reviews)}",
-            f"  Promedio Seguridad:       {avg(seg)}/10",
-            f"  Promedio Rendimiento:     {avg(rend)}/10",
-            f"  Promedio Mantenibilidad:  {avg(mant)}/10",
-            "",
-            f"ESTADO ROLLBACK: {'COHERENTE' if coherence_approved else 'INCOMPLETO'}",
-            "",
-            "HALLAZGOS CRITICOS Y ALTOS",
-        ]
-        lines += [f"  {h}" for h in critical_high] if critical_high else ["  Ninguno"]
-        lines += ["", "RESUMEN EJECUTIVO", f"  {executive_summary}"]
-
-        return "\n".join(lines)
+        return MigrationReport.build(migration_id, reviews, coherence, resumen)

@@ -98,34 +98,36 @@ Python >= 3.12; runtime deps (`langchain`, `langgraph`, `langchain-ollama`,
 name; forward and rollback files are read into memory up front and passed as
 `(name, content)` tuples.
 
-### One LangGraph graph, driven by a plain loop (`src/graph.py` + `src/main.py`)
+### One LangGraph graph, run with `.batch()` (`src/graph.py` + `src/main.py`)
 
-**Migration sweep** — `main.review_migrations` iterates the migrations **in order**
-(plain `for`, no graph), calling `migration_graph.invoke(new_migration_state(...))` once
-per migration. Forward scripts already reviewed accumulate in `previous_scripts` and are
-fed to later migrations as `schema_context` (`build_schema_context`, capped by
-`--max-schema-scripts`). After the loop it runs `ReporterAgent` once (unless
-`--skip-reporter`). It returns `(all_reviews, incoherent_migrations)` for `decide_exit` /
-SARIF.
+**Migration batch** — `graph.build_migration_states` turns the migration list into one
+`MigrationState` per migration that has forward scripts (a migration without any is
+skipped with a warning). Each state carries its own `schema_context` = the forward
+scripts of the *earlier* migrations (`build_schema_context`, capped by
+`--max-schema-scripts`), which is known upfront. `main` runs them with
+`migration_graph.batch(states, config={"max_concurrency": 4})` — the framework's Runnable
+batch, no orchestration loop of our own. Then `ReporterAgent` runs once (unless
+`--skip-reporter`). `main` derives `all_reviews` / `reports` / `incoherent` from the
+result list for `decide_exit` / SARIF.
 
-**Migration graph** (`MigrationState`, the only compiled graph) — per migration:
-`fan_out` → parallel `review_script` workers (one `Send` per forward script) → `gather`
-fan-in → route to `escalate` if any worker set `has_critical`, else `coherence` →
-`mini_reporter`. Parallel-worker state is merged with `operator.add` / `operator.or_`
-reducers. `review_script` calls `reviewer.review(...)` and `coherence_node` calls
-`coherence_agent.analyze(...)`; each is a single LangChain **`create_agent`** run that
-loads skills via the `load_skill` tool and then returns the structured schema
-(`ReviewOutput` / `CoherenceOutput`) as `result["structured_response"]`. No hand-rolled
-tool loop, no text parsing.
+**Migration graph** (`MigrationState`, the only compiled graph) — a straight line:
+`START` —(conditional `Send` fan-out, one per forward script)→ parallel `review_script`
+→ `coherence` → `mini_reporter` → `END`. `coherence` runs once after the implicit fan-in
+(no `gather`/join node). Parallel-worker state merges with `operator.add` reducers.
+`review_script` calls `reviewer.review(...)`, `coherence` calls
+`coherence_agent.analyze(...)`, `mini_reporter` calls `mini_reporter_agent.generate(...)`;
+the first two are a single LangChain **`create_agent`** run that loads skills via the
+`load_skill` tool and returns the structured schema (`ReviewOutput` / `CoherenceOutput`)
+as `result["structured_response"]`. No hand-rolled tool loop, no text parsing.
 
 There is no per-node safety net around the review or coherence work: a crashing review
 or coherence check (LLM error, schema-`ValidationError`) propagates out of the node and
 aborts the whole run with a non-zero exit — no synthetic `_REVIEW_FALLO` finding, no
 fail-safe not-approved. A genuine `INCOMPLETO` veredicto still flows through normally
-(`coherence_approved=False` → exit 1 with a clean message); only *exceptions* now crash.
-The two exceptions: `mini_reporter_node` and the `ReporterAgent` call in
-`review_migrations` swallow errors into a placeholder — the reports are informational and
-never gate the merge.
+(→ `incoherent` → exit 1 with a clean message); only *exceptions* crash. The two
+exceptions: `mini_reporter_node` (falls back to a placeholder `MigrationReport`) and the
+`ReporterAgent` call in `main` swallow errors — the reports are informational and never
+gate the merge.
 
 ### Agents (`src/agents/`)
 
@@ -141,29 +143,33 @@ never gate the merge.
   normalization; an off-enum value is a `ValidationError` that propagates out of
   `coherence_node` and aborts the run); `.approved` is `veredicto is Veredicto.COHERENTE`. `CoherenceOutput.render()`
   produces the report (logged + fed to the MiniReporter) from the structured fields.
-  `coherence_node` short-circuits to approved when a migration has no forward scripts.
-- **`MiniReporterAgent`** — per-migration report: metrics computed in Python from
-  structured findings + an LLM narrative summary, assembled into a fixed text layout.
-- **`ReporterAgent`** — final executive report consolidating the mini-reports;
-  skipped entirely with `--skip-reporter`.
+- **`MiniReporterAgent`** — `generate(migration_id, reviews, coherence) -> MigrationReport`:
+  one plain `model.invoke(...).text` for the narrative `resumen_ejecutivo`, then
+  `MigrationReport.build(...)` computes the metrics in Python (`statistics.mean`) from the
+  structured findings. The text layout is `MigrationReport.render()` — one method.
+- **`ReporterAgent`** — `summarize(reports: list[MigrationReport]) -> str`: builds its
+  prompt from `r.render()` of each mini-report and returns `model.invoke(...).text`.
+  Skipped entirely with `--skip-reporter`.
 
-`MiniReporterAgent` / `ReporterAgent` receive the model already wrapped by
-`llm.resilient()` from `main.py` and consume a free-form reply with `response.text`
-(langchain-core native). `ReviewerAgent` / `CoherenceAgent` get the bare model plus
-`SKILLS_BASE_PATH` and `retries`; `agents/base.build_skill_agent` wires that into
-`create_agent` (`ModelRetryMiddleware` when `retries > 0`, nothing otherwise — the
-`load_skill` loop is bounded by langgraph's `recursion_limit`). `load_prompt` (the only
-other helper in `agents/base.py`) loads a plain-text prompt from `src/prompts/`.
+All four agents take the bare model from `build_model` (`init_chat_model`); retry is the
+model's own `max_retries` (cloud providers only — `ChatOllama` has none), nothing is
+wrapped. `ReviewerAgent` / `CoherenceAgent` also get `SKILLS_BASE_PATH`;
+`agents/base.build_skill_agent` composes the system prompt and calls `create_agent` with
+**no middleware** (the `load_skill` loop is bounded by langgraph's `recursion_limit`).
+`load_prompt` (the only other helper in `agents/base.py`) loads a stripped plain-text
+prompt from `src/prompts/`. `MiniReporter` / `Reporter` read the reply with
+`response.text` (langchain-core native).
 
 ### Skills system (`src/skills.py`)
 
-`load_skills` reads `src/skills/*/SKILL.md` (YAML frontmatter parsed with `yaml.safe_load`,
-`name` / `description`) into frozen `Skill` dataclasses. Both agents load the whole
-`src/skills/` folder — descriptions go into the system prompt, full bodies are pulled in
-on demand via the `load_skill` tool (`make_load_skill_tool`; an unknown name raises
-`ValueError`, which `create_agent`'s default `ToolErrorMiddleware` feeds back to the
-model). `skill_calls(messages)` extracts which skills a run actually loaded. The model
-picks the relevant ones (`sql-code-review` / `sql-optimization` for the reviewer,
+`load_skills` reads `src/skills/*/SKILL.md` — frontmatter parsed with the
+`python-frontmatter` library (no regex), `name` / `description` into frozen `Skill`
+dataclasses. Both agents load the whole `src/skills/` folder — descriptions go into the
+system prompt (`skills_header`), full bodies are pulled in on demand via the single
+`load_skill(skill_name)` tool (`make_load_skill_tool`; an unknown name raises
+`ValueError`, which `create_agent`'s default tool-error handling feeds back to the model).
+`skill_calls(messages)` extracts which skills a run actually loaded. The model picks the
+relevant ones (`sql-code-review` / `sql-optimization` for the reviewer,
 `rollback-coherence` for coherence). To add guidance for either agent, add a new
 `SKILL.md` folder here.
 
@@ -180,6 +186,13 @@ OBSERVACION`); `titulo` / `riesgo` / `recomendacion` are required (`min_length=1
 scores are `int` with `ge=0, le=10`. No aliases, no clamping — `"ALTA"`, `11`, `""` all
 raise. `Finding.linea: int | None` feeds the SARIF region. `ReviewResult.render()` /
 `Finding.render()` produce the text for logs and the MiniReporter's LLM context.
+
+`MigrationReport` (same module, a `@dataclass`, **not** an LLM schema) is what
+`MiniReporterAgent.generate` returns: `migration_id`, `scripts_revisados`,
+`prom_seguridad/rendimiento/mantenibilidad: float | None`, `rollback_coherente: bool`,
+`hallazgos_altos: list[str]`, `resumen_ejecutivo: str`. `MigrationReport.build(...)`
+computes the metrics from structured `ScriptReview`s; `MigrationReport.render()` is the
+one place the report's text layout lives.
 
 `CoherenceOutput` (same module) is the `create_agent` `response_format` for
 `CoherenceAgent`: `resumen_forward` / `resumen_rollback` / `analisis_coherencia` prose
@@ -205,17 +218,15 @@ output — no custom JSON.
 
 `--fail-on` (CSV of prioridades, default `CRÍTICO`) → any finding with a matching
 prioridad, **or** any incomplete rollback, → exit 1. `decide_exit` is a pure function
-(unit-tested). `MigrationState.has_critical` only routes `escalate` inside the migration
-graph (an early-exit optimization); it does not decide the exit code and is not read
-outside the graph.
+(unit-tested); it is the *only* thing that decides the exit code.
 
 ### Providers (`src/llm.py`)
 
-`build_model(provider, base_url, model, api_key, *, temperature=0.0, timeout=120.0)` —
-`ollama` (default, `ChatOllama`, `num_ctx=16384`, `client_kwargs={"timeout": …}`) or any
-OpenAI-compatible endpoint (`openai` / `openrouter` / `groq` via `ChatOpenAI`,
-`max_retries=0`, default URLs in `PROVIDER_DEFAULT_URLS`). `resilient(runnable, retries)`
-wraps a runnable with `with_retry(stop_after_attempt=retries+1,
-wait_exponential_jitter=True)`; it's used for the two reporter agents' plain `.invoke()`
-calls. `ReviewerAgent` / `CoherenceAgent` don't use it — their retry is
-`ModelRetryMiddleware` inside `create_agent`.
+`build_model(provider, base_url, model, api_key, *, temperature=0.0, timeout=120.0,
+retries=2)` is a thin wrapper over **`init_chat_model`** (the recommended v1 way).
+`ollama` → `model_provider="ollama"` (`num_ctx=16384`, `client_kwargs={"timeout": …}`);
+`openai` / `openrouter` / `groq` → `model_provider="openai"` with `base_url` from
+`PROVIDER_DEFAULT_URLS` and a throwaway `api_key` if none given. `retries` →
+`max_retries` (the model's own backoff; `ChatOllama` ignores it — local endpoint, no
+retry needed). Nothing is wrapped after construction — no `resilient`, no retry
+middleware.

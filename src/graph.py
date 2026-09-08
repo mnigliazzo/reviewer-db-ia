@@ -2,32 +2,27 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-from typing_extensions import TypedDict
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReviewerAgent
 from .logging_utils import banner
-from .models import ScriptReview
+from .models import CoherenceOutput, MigrationReport, ScriptReview
 
 logger = logging.getLogger(__name__)
 
-
-# ── Per-migration state ────────────────────────────────────────────────────────
 
 class MigrationState(TypedDict):
     migration_id: str
     schema_context: str
     scripts_to_review: list                               # [(SqlScript, sql_content), ...]
-    rollback_scripts_data: list                           # pre-cargado, solo para coherence
-    reviews: Annotated[list, operator.add]                # mergeado de workers paralelos
-    forward_scripts_data: Annotated[list, operator.add]   # mergeado de workers paralelos
-    has_critical: Annotated[bool, operator.or_]           # OR de todos los workers
-    coherence_report: str
-    coherence_approved: bool
-    mini_report: str
+    rollback_scripts_data: list                           # [(nombre, contenido), ...]
+    reviews: Annotated[list, operator.add]                # mergeado del fan-out
+    forward_scripts_data: Annotated[list, operator.add]   # mergeado del fan-out
+    coherence: CoherenceOutput | None
+    report: MigrationReport | None
 
 
 def build_migration_graph(
@@ -35,10 +30,13 @@ def build_migration_graph(
     coherence_agent: CoherenceAgent,
     mini_reporter_agent: MiniReporterAgent,
 ):
-    def fan_out_fn(state: MigrationState):
-        scripts = state.get("scripts_to_review", [])
-        if not scripts:
-            return "coherence"
+    """``START -(Send fan-out)-> review_script -> coherence -> mini_reporter -> END``.
+
+    ``coherence`` corre una sola vez tras el fan-in implícito de los ``review_script``
+    paralelos. Se invoca una vez por migración (vía ``.batch()`` desde ``main``).
+    """
+
+    def fan_out(state: MigrationState) -> list[Send]:
         return [
             Send("review_script", {
                 "migration_id": state["migration_id"],
@@ -46,89 +44,56 @@ def build_migration_graph(
                 "script": script,
                 "sql_content": sql_content,
             })
-            for script, sql_content in scripts
+            for script, sql_content in state["scripts_to_review"]
         ]
 
     def review_script_node(worker: dict) -> dict:
-        """Worker paralelo: carga skills y pide el review estructurado de un script."""
-        script = worker["script"]
-        sql_content = worker["sql_content"]
-
+        script, sql_content = worker["script"], worker["sql_content"]
         logger.info(f"Reviewing: {worker['migration_id']}/{script.file.name}")
 
-        result = reviewer.review(script, sql_content, worker.get("schema_context", ""))
-        sr = ScriptReview(script=script, result=result)
+        result = reviewer.review(script, sql_content, worker["schema_context"])
 
         banner(logger, f"REVIEW: {script.file.name}")
         logger.info(f"Skills usadas: {', '.join(result.skills_utilizadas) or 'ninguna'}")
         logger.info(result.render())
 
         return {
-            "reviews": [sr],
+            "reviews": [ScriptReview(script=script, result=result)],
             "forward_scripts_data": [(script.file.name, sql_content)],
-            "has_critical": result.has_critical,
         }
-
-    def gather_node(state: MigrationState) -> dict:
-        """Fan-in: corre una vez después de que todos los workers terminan."""
-        return {}
-
-    def route_after_gather(state: MigrationState) -> str:
-        return "escalate" if state.get("has_critical") else "coherence"
 
     def coherence_node(state: MigrationState) -> dict:
         mid = state["migration_id"]
-        forward = state.get("forward_scripts_data", [])
-        if not forward:
-            return {
-                "coherence_report": f"MIGRACION: {mid}\n\nNo hay scripts de despliegue forward para analizar.",
-                "coherence_approved": True,
-            }
-        output = coherence_agent.analyze(mid, forward, state.get("rollback_scripts_data", []))
-        report = output.render()
+        output = coherence_agent.analyze(
+            mid, state["forward_scripts_data"], state["rollback_scripts_data"]
+        )
         banner(logger, f"COHERENCIA: {mid}", "~")
-        logger.info(report)
+        logger.info(output.render())
         if not output.approved:
             logger.warning(f"Rollback incompleto detectado en migración {mid}")
-        return {"coherence_report": report, "coherence_approved": output.approved}
+        return {"coherence": output}
 
     def mini_reporter_node(state: MigrationState) -> dict:
         mid = state["migration_id"]
         try:
-            report = mini_reporter_agent.report(
-                mid,
-                state.get("reviews", []),
-                state.get("coherence_report", ""),
-                state.get("coherence_approved", True),
-            )
+            report = mini_reporter_agent.generate(mid, state["reviews"], state["coherence"])
         except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
-            logger.exception(f"El mini-informe de {mid} falló")
-            report = f"(No se pudo generar el informe de la migración {mid}.)"
+            logger.exception(f"El informe de la migración {mid} falló")
+            report = MigrationReport.build(
+                mid, state["reviews"], state["coherence"],
+                "(No se pudo generar el resumen ejecutivo.)",
+            )
         banner(logger, f"INFORME MIGRACIÓN: {mid}", "*")
-        logger.info(report)
-        return {"mini_report": report}
-
-    def escalate_node(state: MigrationState) -> dict:
-        critical = [r.script.file.name for r in state.get("reviews", []) if r.result.has_critical]
-        logger.error(f"ESCALATE — Hallazgos CRÍTICOS en {state['migration_id']}: {', '.join(critical)}")
-        return {}
+        logger.info(report.render())
+        return {"report": report}
 
     graph = StateGraph(MigrationState)
-    graph.add_node("fan_out", lambda s: {})
     graph.add_node("review_script", review_script_node)
-    graph.add_node("gather", gather_node)
     graph.add_node("coherence", coherence_node)
     graph.add_node("mini_reporter", mini_reporter_node)
-    graph.add_node("escalate", escalate_node)
 
-    graph.add_edge(START, "fan_out")
-    graph.add_conditional_edges("fan_out", fan_out_fn, ["review_script", "coherence"])
-    graph.add_edge("review_script", "gather")
-    graph.add_conditional_edges("gather", route_after_gather, {
-        "escalate": "escalate",
-        "coherence": "coherence",
-    })
-    graph.add_edge("escalate", END)
+    graph.add_conditional_edges(START, fan_out, ["review_script"])
+    graph.add_edge("review_script", "coherence")
     graph.add_edge("coherence", "mini_reporter")
     graph.add_edge("mini_reporter", END)
 
@@ -136,8 +101,8 @@ def build_migration_graph(
 
 
 def build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: int = 10) -> str:
-    """Contexto para el reviewer: los scripts forward ya revisados de migraciones
-    anteriores (los últimos ``max_scripts``; ``0`` = todos)."""
+    """Contexto para el reviewer: los scripts forward de migraciones anteriores
+    (los últimos ``max_scripts``; ``0`` = todos)."""
     if not previous_scripts:
         return ""
     recent = previous_scripts[-max_scripts:] if max_scripts > 0 else previous_scripts
@@ -145,17 +110,25 @@ def build_schema_context(previous_scripts: list[tuple[str, str]], max_scripts: i
     return f"CONTEXTO - scripts SQL anteriores de esta migración:\n\n{blocks}"
 
 
-def new_migration_state(migration_id: str, schema_context: str, forward_scripts: list, rollback_data: list) -> dict:
-    """Estado inicial para una corrida de ``build_migration_graph().invoke()``."""
-    return {
-        "migration_id": migration_id,
-        "schema_context": schema_context,
-        "scripts_to_review": forward_scripts,
-        "rollback_scripts_data": rollback_data,
-        "reviews": [],
-        "forward_scripts_data": [],
-        "has_critical": False,
-        "coherence_report": "",
-        "coherence_approved": True,
-        "mini_report": "",
-    }
+def build_migration_states(migrations: list[tuple], max_schema_scripts: int = 0) -> list[MigrationState]:
+    """Estados iniciales para ``migration_graph.batch(...)``, uno por migración con
+    scripts forward. El ``schema_context`` de cada una son los forward de las
+    anteriores (conocidos de antemano)."""
+    states: list[MigrationState] = []
+    seen: list[tuple[str, str]] = []
+    for migration_id, forward_scripts, rollback_data in migrations:
+        if not forward_scripts:
+            logger.warning(f"Migración {migration_id} sin scripts forward — se omite")
+            continue
+        states.append({
+            "migration_id": migration_id,
+            "schema_context": build_schema_context(seen, max_schema_scripts),
+            "scripts_to_review": forward_scripts,
+            "rollback_scripts_data": rollback_data,
+            "reviews": [],
+            "forward_scripts_data": [],
+            "coherence": None,
+            "report": None,
+        })
+        seen += [(script.file.name, sql) for script, sql in forward_scripts]
+    return states

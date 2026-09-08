@@ -14,13 +14,12 @@ class ReviewerAgent:
     """Revisa un script SQL: carga las skills que necesite y devuelve un
     ``ReviewResult`` estructurado."""
 
-    def __init__(self, model: BaseChatModel, skills_base_path: Path, *, retries: int = 0):
+    def __init__(self, model: BaseChatModel, skills_base_path: Path):
         self._agent = build_skill_agent(
             model,
             load_skills(skills_base_path),
             system_prompt_file="reviewer_system.md",
             response_format=ReviewOutput,
-            retries=retries,
         )
 
     def review(

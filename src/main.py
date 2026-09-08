@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
-from .graph import build_migration_graph, build_schema_context, new_migration_state
-from .llm import CLOUD_PROVIDERS, SUPPORTED_PROVIDERS, build_model, resilient
+from .graph import build_migration_graph, build_migration_states
+from .llm import CLOUD_PROVIDERS, SUPPORTED_PROVIDERS, build_model
 from .logging_utils import banner
 from .models import Prioridad, ScriptReview, SqlScript
 from .sarif import to_sarif
@@ -71,46 +71,6 @@ def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
     return queue
 
 
-def review_migrations(
-    migration_graph,
-    migrations: list[tuple],
-    max_schema_scripts: int,
-    reporter_agent: ReporterAgent | None,
-) -> tuple[list[ScriptReview], list[str]]:
-    """Corre el grafo de migración una vez por migración, en orden, arrastrando
-    los scripts ya revisados como ``schema_context``. Devuelve
-    ``(all_reviews, incoherent_migrations)``.
-    """
-    previous_scripts: list[tuple[str, str]] = []
-    all_reviews: list[ScriptReview] = []
-    migration_reports: list[str] = []
-    incoherent: list[str] = []
-
-    for migration_id, forward_scripts, rollback_data in migrations:
-        banner(logger, f"MIGRATION: {migration_id}", "#")
-        result = migration_graph.invoke(new_migration_state(
-            migration_id,
-            build_schema_context(previous_scripts, max_schema_scripts),
-            forward_scripts,
-            rollback_data,
-        ))
-        all_reviews += result["reviews"]
-        previous_scripts += result["forward_scripts_data"]
-        if result.get("mini_report"):
-            migration_reports.append(result["mini_report"])
-        if not result.get("coherence_approved", True):
-            incoherent.append(migration_id)
-
-    if reporter_agent is not None:
-        banner(logger, "INFORME EJECUTIVO FINAL", "#")
-        try:
-            logger.info(reporter_agent.report(migration_reports))
-        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
-            logger.exception("El informe ejecutivo final falló")
-
-    return all_reviews, incoherent
-
-
 def decide_exit(
     all_reviews: list[ScriptReview],
     incoherent_migrations: list[str],
@@ -150,7 +110,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-schema-scripts", type=int, default=0, help="Max scripts previos en el schema context (0 = ilimitado)")
     parser.add_argument("--temperature",        type=float, default=0.0, help="Temperature del modelo (default 0 = determinista)")
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
-    parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos por llamada al LLM ante error transitorio")
+    parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos con backoff por llamada al LLM (solo providers cloud; ollama no tiene retry nativo)")
     parser.add_argument("--fail-on",            type=str, default="CRÍTICO",
                         help="Prioridades que hacen fallar el pipeline (CSV). Default: CRÍTICO")
     parser.add_argument("--sarif",              type=str, help="Escribe el reporte SARIF 2.1.0 en esta ruta")
@@ -202,22 +162,30 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
     model = build_model(
         args.provider, args.base_url, args.model_agent, args.api_key,
-        temperature=args.temperature, timeout=args.llm_timeout,
+        temperature=args.temperature, timeout=args.llm_timeout, retries=args.llm_retries,
     )
-    resilient_model = resilient(model, args.llm_retries)
     migration_graph = build_migration_graph(
-        ReviewerAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
-        CoherenceAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
-        MiniReporterAgent(resilient_model),
+        ReviewerAgent(model, SKILLS_BASE_PATH),
+        CoherenceAgent(model, SKILLS_BASE_PATH),
+        MiniReporterAgent(model),
     )
-    reporter_agent = ReporterAgent(resilient_model) if not args.skip_reporter else None
 
-    all_reviews, incoherent = review_migrations(
-        migration_graph,
-        build_migrations_queue(scripts),
-        args.max_schema_scripts,
-        reporter_agent,
-    )
+    states = build_migration_states(build_migrations_queue(scripts), args.max_schema_scripts)
+    results = migration_graph.batch(states, config={"max_concurrency": 4})
+
+    all_reviews = [review for res in results for review in res["reviews"]]
+    reports = [res["report"] for res in results if res["report"] is not None]
+    incoherent = [
+        res["migration_id"] for res in results
+        if res["coherence"] is not None and not res["coherence"].approved
+    ]
+
+    if not args.skip_reporter:
+        banner(logger, "INFORME EJECUTIVO FINAL", "#")
+        try:
+            logger.info(ReporterAgent(model).summarize(reports))
+        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
+            logger.exception("El informe ejecutivo final falló")
 
     if args.sarif:
         sarif_path = Path(args.sarif)

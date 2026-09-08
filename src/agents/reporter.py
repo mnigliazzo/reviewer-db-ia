@@ -5,37 +5,29 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..models import MigrationReport
 from .base import load_prompt
 
 logger = logging.getLogger(__name__)
 
 
 class ReporterAgent:
-    """
-    Genera el informe ejecutivo global consolidando los mini-informes
-    por migración producidos por MiniReporterAgent.
-    """
+    """Consolida los ``MigrationReport`` de cada migración en el informe ejecutivo final."""
 
     def __init__(self, model: BaseChatModel):
         self._model = model
         self._system_prompt = load_prompt("reporter_system.md")
 
-    def report(self, migration_reports: list[str]) -> str:
-        if not migration_reports:
+    def summarize(self, reports: list[MigrationReport]) -> str:
+        if not reports:
             return "No hay informes de migración para consolidar."
 
-        reports_text = "\n\n".join(
-            f"--- Migración {i + 1} ---\n{report}"
-            for i, report in enumerate(migration_reports)
-        )
-
-        messages = [
+        payload = "\n\n".join(r.render() for r in reports)
+        logger.info("ReporterAgent generando informe ejecutivo final")
+        return self._model.invoke([
             SystemMessage(content=self._system_prompt),
             HumanMessage(content=(
-                f"Consolida los siguientes {len(migration_reports)} informes de migración "
-                f"en un informe ejecutivo final:\n\n{reports_text}"
+                f"Consolidá los siguientes {len(reports)} informes de migración "
+                f"en un informe ejecutivo final:\n\n{payload}"
             )),
-        ]
-
-        logger.info("ReporterAgent generando informe ejecutivo final")
-        return self._model.invoke(messages).text
+        ]).text
