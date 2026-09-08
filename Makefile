@@ -45,7 +45,7 @@ prepare-delta: check-env
 	 URL=$$(grep REPO_URL $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 \
 	 echo "📥 Clonando rama $$BRANCH de forma segura..."; \
-	 git clone --depth 1 -b "$$BRANCH" --single-branch "$$URL" $(FOLDER_TMP)
+	 git -c core.longpaths=true clone --depth 1 -b "$$BRANCH" --single-branch "$$URL" $(FOLDER_TMP)
 
 	@# Filtramos asegurando el listado correcto usando rutas nativas de directorios
 	@CURRENT_VERSION=$$(cat $(FOLDER_TMP)/$(FILE_VERSION) | tr -d '\r\n '); \

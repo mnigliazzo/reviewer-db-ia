@@ -56,6 +56,13 @@ function Invoke-Native([Parameter(Mandatory)][scriptblock]$Cmd) {
     if ($LASTEXITCODE -ne 0) { throw "Comando fallo (exit $LASTEXITCODE): $Cmd" }
 }
 
+function Remove-Tree([string]$path) {
+    # rmdir de cmd aguanta paths largos (MAX_PATH) mejor que Remove-Item en PS 5.1.
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    & cmd /c rmdir /s /q "$path" 2>&1 | Out-Null
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+}
+
 # ---- targets -------------------------------------------------------------
 
 function Target-Help {
@@ -87,7 +94,7 @@ function Target-Build {
 function Target-PrepareDelta {
     Target-CheckEnv
     Write-Host '>> Iniciando preparacion del entorno delta...'
-    if (Test-Path $FolderTmp) { Remove-Item -Recurse -Force $FolderTmp }
+    Remove-Tree $FolderTmp
 
     $env:GIT_USERNAME = Get-EnvValue 'GIT_USER'
     $b64 = Get-EnvValue 'GIT_PASSWORD'
@@ -98,7 +105,8 @@ function Target-PrepareDelta {
     $url    = Get-EnvValue 'REPO_URL'
 
     Write-Host ">> Clonando rama $branch..."
-    Invoke-Native { git clone --depth 1 -b $branch --single-branch $url $FolderTmp }
+    # core.longpaths: el repo tiene archivos que exceden MAX_PATH (260) en Windows.
+    Invoke-Native { git -c core.longpaths=true clone --depth 1 -b $branch --single-branch $url $FolderTmp }
 
     $versionFile = Join-Path $FolderTmp $FileVersion
     $current = (Get-Content -Raw -LiteralPath $versionFile).Trim()
@@ -117,13 +125,13 @@ function Target-PrepareDelta {
     foreach ($yearDir in Get-ChildItem -Directory -LiteralPath $FolderTmp) {
         if ($yearDir.Name -notmatch '^\d+$') {
             Write-Host "   borrando carpeta no-migracion: $($yearDir.Name)"
-            Remove-Item -Recurse -Force $yearDir.FullName
+            Remove-Tree $yearDir.FullName
             continue
         }
         $yearN = [int64]$yearDir.Name
         if ($yearN -lt $curYearN) {
             Write-Host "   borrando anio antiguo: $($yearDir.Name)"
-            Remove-Item -Recurse -Force $yearDir.FullName
+            Remove-Tree $yearDir.FullName
             continue
         }
         if ($yearN -ne $curYearN) { continue }
@@ -132,14 +140,14 @@ function Target-PrepareDelta {
             if ($tsDir.Name -notmatch '^\d+$') { continue }
             if ([int64]$tsDir.Name -le $curTsN) {
                 Write-Host "   borrando migracion antigua: $($yearDir.Name)/$($tsDir.Name)"
-                Remove-Item -Recurse -Force $tsDir.FullName
+                Remove-Tree $tsDir.FullName
             }
             else {
                 Write-Host "   conservando delta nuevo: $($yearDir.Name)/$($tsDir.Name)"
             }
         }
         if (-not (Get-ChildItem -Force -LiteralPath $yearDir.FullName)) {
-            Remove-Item -Recurse -Force $yearDir.FullName
+            Remove-Tree $yearDir.FullName
         }
     }
     Write-Host ">> Filtro completado. Carpetas remanentes en $FolderTmp"
@@ -173,7 +181,7 @@ function Target-Down {
 
 function Target-CleanTmp {
     Write-Host '>> Eliminando archivos temporales del repo clonado...'
-    if (Test-Path $FolderTmp) { Remove-Item -Recurse -Force $FolderTmp }
+    Remove-Tree $FolderTmp
 }
 
 function Target-Clean {
