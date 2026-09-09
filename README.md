@@ -43,7 +43,7 @@ python -m venv .venv; .\.venv\Scripts\Activate.ps1
 `install` / `build` / `run` / `clean` / …), no necesita `make` ni bash.
 
 `run.sh` y `run.ps1` leen de `.env` / `.env.local`: `PROVIDER`, `MODEL_BASE_URL`,
-`MODEL_AGENTS`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
+`MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
 `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`, `API_KEY` y
 `SKIP_REPORTER`. Cualquier variable ya definida en el entorno tiene prioridad. En
 `.env` los comentarios van en su propia línea (no al final de una línea de valor).

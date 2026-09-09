@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 # Solo estas claves se leen del .env (evita arrastrar proxy/credenciales de Docker).
 _allowed_key() {
     case "$1" in
-        PROVIDER|MODEL_BASE_URL|BASE_URL|MODEL_AGENT|MODEL_AGENTS|API_KEY|LOG_LEVEL| \
+        PROVIDER|MODEL_BASE_URL|BASE_URL|MODEL_AGENT|API_KEY|LOG_LEVEL| \
         SCRIPTS_PATH|REVIEW_SCRIPTS_PATH|SKIP_REPORTER| \
         REVIEWER_MAX_SCHEMA_SCRIPTS|REVIEWER_FAIL_ON|REVIEWER_LLM_TIMEOUT| \
         REVIEWER_LLM_RETRIES|REVIEWER_SARIF) return 0 ;;
@@ -49,7 +49,7 @@ fi
 
 PROVIDER="${PROVIDER:-ollama}"
 BASE_URL="${MODEL_BASE_URL:-${BASE_URL:-http://localhost:11434}}"
-MODEL="${MODEL_AGENTS:-${MODEL_AGENT:-qwen2.5-coder}}"
+MODEL="${MODEL_AGENT:-qwen2.5-coder}"
 MODEL="$(printf '%s' "$MODEL" | xargs)"                   # trim
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 SCRIPTS_PATH="${SCRIPTS_PATH:-${REVIEW_SCRIPTS_PATH:-$SCRIPT_DIR/tmp/db-script}}"

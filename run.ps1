@@ -8,7 +8,7 @@ Set-Location $ScriptDir
 
 # Solo estas claves se leen del .env (evita arrastrar proxy/credenciales de Docker).
 $AllowKeys = @(
-    'PROVIDER', 'MODEL_BASE_URL', 'BASE_URL', 'MODEL_AGENT', 'MODEL_AGENTS',
+    'PROVIDER', 'MODEL_BASE_URL', 'BASE_URL', 'MODEL_AGENT',
     'API_KEY', 'LOG_LEVEL', 'SCRIPTS_PATH', 'REVIEW_SCRIPTS_PATH', 'SKIP_REPORTER',
     'REVIEWER_MAX_SCHEMA_SCRIPTS',
     'REVIEWER_FAIL_ON', 'REVIEWER_LLM_TIMEOUT', 'REVIEWER_LLM_RETRIES', 'REVIEWER_SARIF'
@@ -48,7 +48,7 @@ function Def($value, $fallback) { if ([string]::IsNullOrWhiteSpace($value)) { $f
 
 $Provider         = Def $env:PROVIDER        'ollama'
 $BaseUrl          = Def $env:MODEL_BASE_URL  (Def $env:BASE_URL 'http://localhost:11434')
-$Model            = Def $env:MODEL_AGENTS    (Def $env:MODEL_AGENT 'qwen2.5-coder')
+$Model            = Def $env:MODEL_AGENT     'qwen2.5-coder'
 $LogLevel         = Def $env:LOG_LEVEL       'INFO'
 $ScriptsPath      = Def $env:SCRIPTS_PATH    (Def $env:REVIEW_SCRIPTS_PATH (Join-Path $ScriptDir 'tmp/db-script'))
 $MaxSchemaScripts = Def $env:REVIEWER_MAX_SCHEMA_SCRIPTS '0'

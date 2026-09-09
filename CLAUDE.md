@@ -14,7 +14,7 @@ Spanish — keep new user-facing strings in Spanish.
 
 `run.ps1` (Windows) and `run.sh` (Linux/macOS/WSL/git-bash) are the direct-run
 entrypoints. Both read a whitelisted subset of keys (`PROVIDER`, `MODEL_BASE_URL`,
-`MODEL_AGENTS`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
+`MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
 `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`, `API_KEY`,
 `SKIP_REPORTER`) from `.env` / `.env.local`; anything already in the
 environment wins. They auto-select `.venv`. `.env.example` values must not carry

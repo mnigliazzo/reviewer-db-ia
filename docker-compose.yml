@@ -26,7 +26,7 @@ services:
     environment:
       PROVIDER: ${PROVIDER:-ollama}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
-      MODEL_AGENTS: ${MODEL_AGENTS:-}
+      MODEL_AGENT: ${MODEL_AGENT:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       API_KEY: ${API_KEY:-}
       SKIP_REPORTER: ${SKIP_REPORTER:-}
