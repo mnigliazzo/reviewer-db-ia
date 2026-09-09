@@ -25,7 +25,9 @@ function Import-DotEnv([string]$Path) {
         if ($idx -lt 1) { continue }
         $key = $line.Substring(0, $idx).Trim()
         if ($AllowKeys -notcontains $key) { continue }
-        if (Test-Path "env:$key") { continue }   # el entorno gana
+        # el entorno gana, pero solo si tiene valor (igual que [ -n ] en run.sh):
+        # una env var seteada y sin valor NO debe tapar el .env.
+        if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($key))) { continue }
         $val = $line.Substring($idx + 1).Trim().Trim('"').Trim("'").Trim()
         Set-Item -Path "env:$key" -Value $val
     }
