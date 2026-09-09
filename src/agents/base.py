@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
+from langchain_core.runnables import Runnable
 
 from ..skills import Skill, make_load_skill_tool, skills_header
 
@@ -22,22 +23,24 @@ def build_skill_agent(
     *,
     system_prompt_file: str,
     response_format: type,
-):
-    """Agente ``create_agent`` de dos fases: carga skills con ``load_skill`` y
-    devuelve ``response_format`` como salida estructurada.
+) -> tuple[Runnable, Runnable, SystemMessage]:
+    """Dos fases, compartidas por ``ReviewerAgent`` y ``CoherenceAgent``:
 
-    Lo comparten ``ReviewerAgent`` y ``CoherenceAgent``; sólo cambian el prompt de
-    sistema y el schema de salida. El retry lo hace el modelo (``max_retries``) y el
-    loop de tool calls lo acota el ``recursion_limit`` de langgraph — sin middleware.
+    1. ``agent`` — ``create_agent`` con la tool ``load_skill`` (loop ReAct del
+       framework) para que el modelo cargue las guías que necesite.
+    2. ``structured`` — ``model.with_structured_output(response_format)``: una
+       llamada forzada que devuelve el schema. ``create_agent`` con
+       ``response_format`` no sirve acá: corta el loop apenas el modelo responde
+       sin tool calls, dejando ``structured_response`` en ``None``.
 
-    ``ToolStrategy``: la salida estructurada es una tool que el modelo tiene que
-    llamar. Los modelos chicos no emiten JSON estructurado nativo de forma fiable
-    (la estrategia automática dejaba ``structured_response`` en ``None``).
+    Devuelve ``(agent, structured, system_message)``. El retry lo hace el modelo
+    (``max_retries``); el loop de tool calls lo acota ``recursion_limit`` — sin
+    middleware.
     """
     system_prompt = f"{load_prompt(system_prompt_file)}\n\n{skills_header(skills)}"
-    return create_agent(
+    agent = create_agent(
         model,
         tools=[make_load_skill_tool(skills)],
         system_prompt=system_prompt,
-        response_format=ToolStrategy(response_format),
     )
+    return agent, model.with_structured_output(response_format), SystemMessage(content=system_prompt)

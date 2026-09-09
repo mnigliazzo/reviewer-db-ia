@@ -84,7 +84,9 @@ class ReviewResult(ReviewOutput):
     skills_utilizadas: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_output(cls, output: ReviewOutput, skills_utilizadas: list[str]) -> ReviewResult:
+    def from_output(cls, output: ReviewOutput | dict, skills_utilizadas: list[str]) -> ReviewResult:
+        # ``with_structured_output`` puede devolver el modelo o un dict según el provider.
+        output = ReviewOutput.model_validate(output)
         return cls(**output.model_dump(), skills_utilizadas=skills_utilizadas)
 
     def render(self) -> str:

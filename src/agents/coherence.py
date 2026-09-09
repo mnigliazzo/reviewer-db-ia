@@ -9,6 +9,12 @@ from ..models import CoherenceOutput
 from ..skills import load_skills
 from .base import build_skill_agent
 
+_FINALIZE = HumanMessage(content=(
+    "Con todo lo analizado, devolvé ahora el análisis de coherencia como objeto "
+    "estructurado (resumen_forward, resumen_rollback, analisis_coherencia, "
+    "veredicto y operaciones_sin_revertir)."
+))
+
 
 class CoherenceAgent:
     """Decide si el rollback de una migración revierte todo lo que hace el
@@ -16,7 +22,7 @@ class CoherenceAgent:
     estructurado. Se ejecuta una vez por migración."""
 
     def __init__(self, model: BaseChatModel, skills_base_path: Path):
-        self._agent = build_skill_agent(
+        self._agent, self._structured, self._system = build_skill_agent(
             model,
             load_skills(skills_base_path),
             system_prompt_file="coherence_system.md",
@@ -39,5 +45,7 @@ class CoherenceAgent:
             f"=== SCRIPTS DE DESPLIEGUE (FORWARD) ===\n\n{forward_block}\n\n"
             f"=== SCRIPTS DE ROLLBACK ===\n\n{rollback_block}"
         )
-        result = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
-        return result["structured_response"]
+        state = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
+        return CoherenceOutput.model_validate(
+            self._structured.invoke([self._system, *state["messages"], _FINALIZE])
+        )
