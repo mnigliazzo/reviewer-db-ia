@@ -18,7 +18,7 @@ help:
 	@echo "  make install           — Instala deps con uv"
 	@echo "  make build             — Construye las imágenes Docker"
 	@echo "  make run               — Auditoría IA sobre el delta actual (MODE=$(MODE))"
-	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.sh)"
+	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.py)"
 	@echo "  make run MODE=docker   — Igual, pero dentro del contenedor"
 	@echo "  make clean             — Limpia contenedores y residuos temporales"
 	@echo ""
@@ -97,8 +97,8 @@ run-docker:
 
 run-local:
 	@echo "🤖 Lanzando agente de IA (local / venv) sobre el delta de migración..."
-	@# run.sh lee .env, elige el python del venv y arma los flags del CLI.
-	@bash run.sh
+	@# run.py lee .env, re-ejecuta con el python del venv y arma los flags del CLI.
+	@python run.py
 
 down: 
 	docker compose $(ENV_FILE) down

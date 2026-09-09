@@ -1,6 +1,6 @@
 <#
   Equivalente del Makefile para Windows (no requiere make ni bash).
-  Espeja los targets del Makefile igual que run.ps1 espeja run.sh.
+  Espeja los targets del Makefile. El entrypoint del CLI es run.py (comun a ambos).
   Solo ASCII: Windows PowerShell 5.1 sin BOM interpreta el script como ANSI.
 
   Uso:
@@ -71,7 +71,7 @@ function Target-Help {
     Write-Host '  .\make.ps1 install           - Instala deps con uv'
     Write-Host '  .\make.ps1 build             - Construye las imagenes Docker'
     Write-Host "  .\make.ps1 run               - Auditoria IA sobre el delta actual (MODE=$(Resolve-Mode))"
-    Write-Host '  .\make.ps1 run -Mode local   - Igual, pero corriendo el CLI en el venv local (via run.ps1)'
+    Write-Host '  .\make.ps1 run -Mode local   - Igual, pero corriendo el CLI en el venv local (via run.py)'
     Write-Host '  .\make.ps1 run -Mode docker  - Igual, pero dentro del contenedor'
     Write-Host '  .\make.ps1 clean             - Limpia contenedores y residuos temporales'
     Write-Host ''
@@ -161,8 +161,9 @@ function Target-RunDocker {
 
 function Target-RunLocal {
     Write-Host '>> Lanzando agente de IA (local / venv) sobre el delta...'
-    & (Join-Path $PSScriptRoot 'run.ps1')
-    if ($LASTEXITCODE -ne 0) { throw "run.ps1 salio con codigo $LASTEXITCODE" }
+    # run.py lee .env, re-ejecuta con el python del venv y arma los flags del CLI.
+    & python (Join-Path $PSScriptRoot 'run.py')
+    if ($LASTEXITCODE -ne 0) { throw "run.py salio con codigo $LASTEXITCODE" }
 }
 
 function Target-Run {

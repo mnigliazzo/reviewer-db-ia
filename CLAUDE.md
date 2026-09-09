@@ -12,18 +12,18 @@ Spanish — keep new user-facing strings in Spanish.
 
 ## Running it
 
-`run.ps1` (Windows) and `run.sh` (Linux/macOS/WSL/git-bash) are the direct-run
-entrypoints. Both read a whitelisted subset of keys (`PROVIDER`, `MODEL_BASE_URL`,
-`MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`,
-`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`, `API_KEY`,
-`SKIP_REPORTER`) from `.env` / `.env.local`; anything already in the
-environment wins. They auto-select `.venv`. `.env.example` values must not carry
-inline `# comments` — the parsers don't strip them.
+`run.py` is the single cross-platform direct-run entrypoint (replaced the old
+`run.sh` / `run.ps1` pair). It reads a whitelisted subset of keys (`PROVIDER`,
+`MODEL_BASE_URL`, `MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`,
+`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`,
+`API_KEY`, `SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
+`.env`); a non-empty real env var wins over both. It re-execs itself with the repo
+`.venv` python if needed and never writes to the environment. `.env.example` values
+must not carry inline `# comments` — the parser doesn't strip them.
 
 ```bash
 cp .env.example .env      # then fill in values
-./run.sh                  # Linux/macOS/WSL
-.\run.ps1                 # Windows PowerShell
+python run.py             # any platform
 ```
 
 ```bash
@@ -39,7 +39,7 @@ python -m src.main --scripts-path <ROOT> --base-url <URL> --model-agent <MODEL> 
 means *unlimited* (not "disabled"). `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
-machine-readable output). `run.sh` / `run.ps1` expose these as `REVIEWER_FAIL_ON`,
+machine-readable output). `run.py` exposes these as `REVIEWER_FAIL_ON`,
 `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`.
 
 ```bash
@@ -53,18 +53,18 @@ make clean
 `make run` dispatches on `MODE` (command-line var > `MODE=` in `.env` > `docker`;
 invalid value → `$(error)`):
 - `MODE=docker` → `docker compose run --rm reviewer`. The container's `CMD`
-  (Dockerfile) is `bash run.sh`; `docker-compose.yml` has **no `command:`**, it only
+  (Dockerfile) is `python run.py`; `docker-compose.yml` has **no `command:`**, it only
   passes the `REVIEWER_*` / `PROVIDER` / … env vars through to the container (and sets
   `SCRIPTS_PATH=/app/scripts_review` via Dockerfile `ENV`).
-- `MODE=local` → `bash run.sh` — the CLI runs in the repo `.venv`, no container.
+- `MODE=local` → `python run.py` — runs in the repo `.venv`, no container.
 
-Either way `run.sh` is the single source of truth for the env-var → CLI-flag mapping
-(`run.ps1` mirrors it for Windows). `run-docker` / `run-local` are also callable
-directly (without the prepare-delta / clean-tmp wrapper).
+`run.py` is the single source of truth for the env-var → CLI-flag mapping.
+`run-docker` / `run-local` are also callable directly (without the prepare-delta /
+clean-tmp wrapper).
 
-`make.ps1` is the Windows port of the `Makefile` (same targets, no `make`/bash needed);
-it mirrors the Makefile the way `run.ps1` mirrors `run.sh`. Keep the two in sync when
-changing orchestration (targets, `MODE` dispatch, the prepare-delta trim rules).
+`make.ps1` is the Windows port of the `Makefile` (same targets, no `make`/bash needed).
+Keep the two in sync when changing orchestration (targets, `MODE` dispatch, the
+prepare-delta trim rules).
 `make.ps1` is ASCII-only on purpose — Windows PowerShell 5.1 misreads a BOM-less UTF-8
 script.
 
@@ -81,7 +81,7 @@ Python >= 3.12; runtime deps (`langchain`, `langgraph`, `langchain-ollama`,
 ## Config notes
 
 - Nothing is loaded from `.env` by `src/` itself — argparse only. `.env` is consumed by
-  `run.ps1` / `run.sh` (whitelisted keys), the Makefile (`ENV_FILE_NAME := .env`), and
+  `run.py` (whitelisted keys), the Makefile (`ENV_FILE_NAME := .env`), and
   `docker-compose.yml` (`--env-file`). `.env*` is gitignored; `.env.example` is the only
   committed env file / template.
 - GitLab CI (`-.gitlab-ci.yml` — the leading `-` in the name is intentional/odd) only

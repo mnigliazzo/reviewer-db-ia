@@ -20,9 +20,9 @@ services:
         - HTTP_PROXY=${HTTP_PROXY:-}
         - HTTPS_PROXY=${HTTPS_PROXY:-}
         - NO_PROXY=${NO_PROXY:-}
-    # El comando lo define el CMD del Dockerfile (bash run.sh): run.sh es la única
+    # El comando lo define el CMD del Dockerfile (python run.py): run.py es la única
     # fuente del mapeo env-var -> flag del CLI, tanto local como en contenedor.
-    # Acá solo se pasan al contenedor las variables que run.sh consume.
+    # Acá solo se pasan al contenedor las variables que run.py consume.
     environment:
       PROVIDER: ${PROVIDER:-ollama}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
