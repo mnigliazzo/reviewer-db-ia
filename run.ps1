@@ -1,6 +1,9 @@
 # Ejecuta el reviewer directamente (Windows / PowerShell).
-# Toma la config de .env (y .env.local si existe); las variables ya presentes
-# en el entorno tienen prioridad. Uso:  .\run.ps1
+# Toma la config de .env (y .env.local si existe); una variable ya presente en el
+# entorno tiene prioridad. Uso:  .\run.ps1
+# NOTA: no escribe nada en $env: -- run.ps1 corre in-process al llamarse desde
+# make.ps1, y ensuciar la sesion haria que un .env editado no se tome en el
+# siguiente run de la misma terminal.
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,7 +17,7 @@ $AllowKeys = @(
     'REVIEWER_FAIL_ON', 'REVIEWER_LLM_TIMEOUT', 'REVIEWER_LLM_RETRIES', 'REVIEWER_SARIF'
 )
 
-function Import-DotEnv([string]$Path) {
+function Import-DotEnv([string]$Path, [hashtable]$Into) {
     if (-not (Test-Path $Path)) { return }
     # -Encoding UTF8: el .env es UTF-8; sin esto Windows PowerShell 5.1 lo lee como
     # ANSI y rompe valores con acentos (ej: REVIEWER_FAIL_ON=CRITICO).
@@ -25,35 +28,42 @@ function Import-DotEnv([string]$Path) {
         if ($idx -lt 1) { continue }
         $key = $line.Substring(0, $idx).Trim()
         if ($AllowKeys -notcontains $key) { continue }
-        # el entorno gana, pero solo si tiene valor (igual que [ -n ] en run.sh):
-        # una env var seteada y sin valor NO debe tapar el .env.
-        if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($key))) { continue }
-        $val = $line.Substring($idx + 1).Trim().Trim('"').Trim("'").Trim()
-        Set-Item -Path "env:$key" -Value $val
+        if ($Into.ContainsKey($key)) { continue }   # .env gana sobre .env.local
+        $Into[$key] = $line.Substring($idx + 1).Trim().Trim('"').Trim("'").Trim()
     }
 }
 
-Import-DotEnv (Join-Path $ScriptDir '.env')
-Import-DotEnv (Join-Path $ScriptDir '.env.local')
+$DotEnv = @{}
+Import-DotEnv (Join-Path $ScriptDir '.env') $DotEnv
+Import-DotEnv (Join-Path $ScriptDir '.env.local') $DotEnv
+
+# Valor de una clave: entorno real (no vacio) > .env > fallback.
+function Cfg([string]$key, [string]$fallback = '') {
+    $fromEnv = [Environment]::GetEnvironmentVariable($key)
+    if (-not [string]::IsNullOrWhiteSpace($fromEnv)) { return $fromEnv.Trim() }
+    if ($DotEnv.ContainsKey($key) -and $DotEnv[$key]) { return $DotEnv[$key].Trim() }
+    return $fallback
+}
 
 # Fail-fast: sin .env ni variables en el entorno no hay nada que hacer.
 $HasEnvFile = (Test-Path (Join-Path $ScriptDir '.env')) -or (Test-Path (Join-Path $ScriptDir '.env.local'))
-if (-not $HasEnvFile -and
-    [string]::IsNullOrWhiteSpace($env:MODEL_BASE_URL) -and [string]::IsNullOrWhiteSpace($env:BASE_URL)) {
+if (-not $HasEnvFile -and -not (Cfg 'MODEL_BASE_URL') -and -not (Cfg 'BASE_URL')) {
     Write-Error "Falta .env (y no hay variables en el entorno). Copia el template:  cp .env.example .env"
     exit 1
 }
 
-function Def($value, $fallback) { if ([string]::IsNullOrWhiteSpace($value)) { $fallback } else { $value.Trim() } }
-
-$Provider         = Def $env:PROVIDER        'ollama'
-$BaseUrl          = Def $env:MODEL_BASE_URL  (Def $env:BASE_URL 'http://localhost:11434')
-$Model            = Def $env:MODEL_AGENT     'qwen2.5-coder'
-$LogLevel         = Def $env:LOG_LEVEL       'INFO'
-$ScriptsPath      = Def $env:SCRIPTS_PATH    (Def $env:REVIEW_SCRIPTS_PATH (Join-Path $ScriptDir 'tmp/db-script'))
-$MaxSchemaScripts = Def $env:REVIEWER_MAX_SCHEMA_SCRIPTS '0'
-$LlmTimeout       = Def $env:REVIEWER_LLM_TIMEOUT        '120'
-$LlmRetries       = Def $env:REVIEWER_LLM_RETRIES        '2'
+$Provider         = Cfg 'PROVIDER'        'ollama'
+$BaseUrl          = Cfg 'MODEL_BASE_URL'  (Cfg 'BASE_URL' 'http://localhost:11434')
+$Model            = Cfg 'MODEL_AGENT'     'qwen2.5-coder'
+$LogLevel         = Cfg 'LOG_LEVEL'       'INFO'
+$ScriptsPath      = Cfg 'SCRIPTS_PATH'    (Cfg 'REVIEW_SCRIPTS_PATH' (Join-Path $ScriptDir 'tmp/db-script'))
+$MaxSchemaScripts = Cfg 'REVIEWER_MAX_SCHEMA_SCRIPTS' '0'
+$LlmTimeout       = Cfg 'REVIEWER_LLM_TIMEOUT'        '120'
+$LlmRetries       = Cfg 'REVIEWER_LLM_RETRIES'        '2'
+$FailOn           = Cfg 'REVIEWER_FAIL_ON'
+$ApiKey           = Cfg 'API_KEY'
+$Sarif            = Cfg 'REVIEWER_SARIF'
+$SkipReporter     = Cfg 'SKIP_REPORTER'
 
 # Python del venv del repo si no hay uno activo.
 $Python = 'python'
@@ -74,10 +84,10 @@ $cliArgs = @(
 )
 # --fail-on solo si esta seteado; el default (CRITICO) vive en src/main.py y asi
 # run.ps1 no necesita un literal no-ASCII (Windows PowerShell 5.1 lo corrompe).
-if (-not [string]::IsNullOrWhiteSpace($env:REVIEWER_FAIL_ON)) { $cliArgs += @('--fail-on', $env:REVIEWER_FAIL_ON) }
-if (-not [string]::IsNullOrWhiteSpace($env:API_KEY)) { $cliArgs += @('--api-key', $env:API_KEY) }
-if (-not [string]::IsNullOrWhiteSpace($env:REVIEWER_SARIF)) { $cliArgs += @('--sarif', $env:REVIEWER_SARIF) }
-if ($env:SKIP_REPORTER -in @('1', 'true', 'True', 'yes', 'YES')) { $cliArgs += '--skip-reporter' }
+if ($FailOn) { $cliArgs += @('--fail-on', $FailOn) }
+if ($ApiKey) { $cliArgs += @('--api-key', $ApiKey) }
+if ($Sarif)  { $cliArgs += @('--sarif', $Sarif) }
+if ($SkipReporter -in @('1', 'true', 'True', 'yes', 'YES')) { $cliArgs += '--skip-reporter' }
 
 & $Python @cliArgs
 exit $LASTEXITCODE
