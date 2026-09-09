@@ -54,7 +54,6 @@ MODEL="$(printf '%s' "$MODEL" | xargs)"                   # trim
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 SCRIPTS_PATH="${SCRIPTS_PATH:-${REVIEW_SCRIPTS_PATH:-$SCRIPT_DIR/tmp/db-script}}"
 MAX_SCHEMA_SCRIPTS="${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}"
-FAIL_ON="${REVIEWER_FAIL_ON:-CRÍTICO}"
 LLM_TIMEOUT="${REVIEWER_LLM_TIMEOUT:-120}"
 LLM_RETRIES="${REVIEWER_LLM_RETRIES:-2}"
 
@@ -73,10 +72,11 @@ set -- -m src.main \
     --base-url           "$BASE_URL" \
     --model-agent        "$MODEL" \
     --max-schema-scripts "$MAX_SCHEMA_SCRIPTS" \
-    --fail-on            "$FAIL_ON" \
     --llm-timeout        "$LLM_TIMEOUT" \
     --llm-retries        "$LLM_RETRIES"
 
+# --fail-on solo si está seteado; el default (CRÍTICO) vive en src/main.py.
+[ -n "${REVIEWER_FAIL_ON:-}" ] && set -- "$@" --fail-on "$REVIEWER_FAIL_ON"
 [ -n "${API_KEY:-}" ] && set -- "$@" --api-key "$API_KEY"
 [ -n "${REVIEWER_SARIF:-}" ] && set -- "$@" --sarif "$REVIEWER_SARIF"
 case "${SKIP_REPORTER:-}" in 1|true|True|yes|YES) set -- "$@" --skip-reporter ;; esac
