@@ -9,19 +9,13 @@ from ..models import ReviewOutput, ReviewResult, SqlScript
 from ..skills import load_skills, skill_calls
 from .base import build_skill_agent
 
-_FINALIZE = HumanMessage(content=(
-    "Con todo lo revisado, devolvé ahora el review como objeto estructurado "
-    "(seguridad, rendimiento, mantenibilidad y la lista de hallazgos). "
-    "Si no hay hallazgos válidos, devolvé la lista vacía."
-))
-
 
 class ReviewerAgent:
     """Revisa un script SQL: carga las skills que necesite y devuelve un
     ``ReviewResult`` estructurado."""
 
     def __init__(self, model: BaseChatModel, skills_base_path: Path):
-        self._agent, self._structured, self._system = build_skill_agent(
+        self._agent = build_skill_agent(
             model,
             load_skills(skills_base_path),
             system_prompt_file="reviewer_system.md",
@@ -42,6 +36,7 @@ class ReviewerAgent:
             prompt += f"\n{schema_context}\n"
         prompt += f"\n{sql_content}"
 
-        state = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
-        output = self._structured.invoke([self._system, *state["messages"], _FINALIZE])
-        return ReviewResult.from_output(output, skill_calls(state["messages"]))
+        result = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
+        return ReviewResult.from_output(
+            result["structured_response"], skill_calls(result["messages"])
+        )
