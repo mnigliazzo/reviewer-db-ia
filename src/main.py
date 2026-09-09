@@ -171,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     states = build_migration_states(build_migrations_queue(scripts), args.max_schema_scripts)
+    # Tope global de llamadas LLM concurrentes (migraciones + review_script). Solo
+    # ayuda si el backend sirve en paralelo (ej: OLLAMA_NUM_PARALLEL); contra una
+    # instancia de a una request, es lo mismo que 1.
     results = migration_graph.batch(states, config={"max_concurrency": 4})
 
     all_reviews = [review for res in results for review in res["reviews"]]
