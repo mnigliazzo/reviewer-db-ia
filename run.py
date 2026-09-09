@@ -18,10 +18,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 # Solo estas claves se leen del .env (no arrastrar proxy/credenciales de Docker).
+# REVIEW_SCRIPTS_PATH no está: eso lo usa solo docker-compose (source del volumen);
+# el CLI consume SCRIPTS_PATH.
 _ALLOWED = frozenset({
-    "PROVIDER", "MODEL_BASE_URL", "BASE_URL", "MODEL_AGENT", "API_KEY", "LOG_LEVEL",
-    "SCRIPTS_PATH", "REVIEW_SCRIPTS_PATH", "SKIP_REPORTER", "REVIEWER_MAX_SCHEMA_SCRIPTS",
-    "REVIEWER_FAIL_ON", "REVIEWER_LLM_TIMEOUT", "REVIEWER_LLM_RETRIES", "REVIEWER_SARIF",
+    "PROVIDER", "MODEL_BASE_URL", "MODEL_AGENT", "API_KEY", "LOG_LEVEL", "SCRIPTS_PATH",
+    "SKIP_REPORTER", "REVIEWER_MAX_SCHEMA_SCRIPTS", "REVIEWER_FAIL_ON",
+    "REVIEWER_LLM_TIMEOUT", "REVIEWER_LLM_RETRIES", "REVIEWER_SARIF",
 })
 
 
@@ -64,12 +66,11 @@ def _build_argv(cfg: dict[str, str]) -> list[str]:
     def get(key: str, default: str = "") -> str:
         return os.environ.get(key) or cfg.get(key) or default
 
-    scripts_path = get("SCRIPTS_PATH") or get("REVIEW_SCRIPTS_PATH", str(ROOT / "tmp" / "db-script"))
     argv = [
         "--provider", get("PROVIDER", "ollama"),
-        "--base-url", get("MODEL_BASE_URL") or get("BASE_URL", "http://localhost:11434"),
+        "--base-url", get("MODEL_BASE_URL", "http://localhost:11434"),
         "--model-agent", get("MODEL_AGENT", "qwen2.5-coder").strip(),
-        "--scripts-path", scripts_path,
+        "--scripts-path", get("SCRIPTS_PATH", str(ROOT / "tmp" / "db-script")),
         "--log-level", get("LOG_LEVEL", "INFO"),
         "--max-schema-scripts", get("REVIEWER_MAX_SCHEMA_SCRIPTS", "0"),
         "--llm-timeout", get("REVIEWER_LLM_TIMEOUT", "120"),
@@ -91,7 +92,7 @@ def main() -> int:
     os.chdir(ROOT)
 
     cfg, has_env_file = _load_config()
-    if not has_env_file and not (os.environ.get("MODEL_BASE_URL") or os.environ.get("BASE_URL")):
+    if not has_env_file and not os.environ.get("MODEL_BASE_URL"):
         sys.stderr.write(
             "ERROR: falta .env (y no hay variables en el entorno). "
             "Copiá el template:  cp .env.example .env\n"
