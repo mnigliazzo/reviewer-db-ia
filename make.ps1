@@ -17,7 +17,10 @@ param(
     [string]$Target = 'help',
 
     [ValidateSet('docker', 'local')]
-    [string]$Mode
+    [string]$Mode,
+
+    [ValidateSet('clone', 'folder')]
+    [string]$Source
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +55,18 @@ function Resolve-Mode {
     return 'docker'
 }
 
+function Resolve-Source {
+    if ($Source) { return $Source }
+    $fromEnv = (Get-EnvValue '^SOURCE=') -replace '\s*#.*$', ''
+    if ($fromEnv) {
+        if ($fromEnv -notin @('clone', 'folder')) {
+            throw "SOURCE invalido: '$fromEnv'. Valores validos: clone | folder"
+        }
+        return $fromEnv
+    }
+    return 'clone'
+}
+
 function Invoke-Native([Parameter(Mandatory)][scriptblock]$Cmd) {
     & $Cmd
     if ($LASTEXITCODE -ne 0) { throw "Comando fallo (exit $LASTEXITCODE): $Cmd" }
@@ -70,10 +85,11 @@ function Target-Help {
     Write-Host ''
     Write-Host '  .\make.ps1 install           - Instala deps con uv'
     Write-Host '  .\make.ps1 build             - Construye las imagenes Docker'
-    Write-Host "  .\make.ps1 run               - Auditoria IA sobre el delta actual (MODE=$(Resolve-Mode))"
-    Write-Host '  .\make.ps1 run -Mode local   - Igual, pero corriendo el CLI en el venv local (via run.py)'
-    Write-Host '  .\make.ps1 run -Mode docker  - Igual, pero dentro del contenedor'
-    Write-Host '  .\make.ps1 clean             - Limpia contenedores y residuos temporales'
+    Write-Host "  .\make.ps1 run                 - Auditoria IA (MODE=$(Resolve-Mode)  SOURCE=$(Resolve-Source))"
+    Write-Host '  .\make.ps1 run -Mode local     - Igual, pero corriendo el CLI en el venv local (via run.py)'
+    Write-Host '  .\make.ps1 run -Mode docker    - Igual, pero dentro del contenedor'
+    Write-Host '  .\make.ps1 run -Source folder  - Usa la carpeta del .env directamente, sin clonar db-scripts'
+    Write-Host '  .\make.ps1 clean               - Limpia contenedores y residuos temporales'
     Write-Host ''
 }
 
@@ -167,13 +183,15 @@ function Target-RunLocal {
 }
 
 function Target-Run {
-    Target-PrepareDelta
+    $clone = (Resolve-Source) -eq 'clone'
+    if ($clone) { Target-PrepareDelta }
+    else { Write-Host '>> SOURCE=folder: uso la carpeta del .env, sin clonar db-scripts.' }
     $failed = $null
     try {
         if ((Resolve-Mode) -eq 'local') { Target-RunLocal } else { Target-RunDocker }
     }
     catch { $failed = $_ }
-    finally { Target-CleanTmp }
+    finally { if ($clone) { Target-CleanTmp } }
     if ($failed) { throw $failed }
 }
 

@@ -46,25 +46,31 @@ machine-readable output). `run.py` exposes these as `REVIEWER_FAIL_ON`,
 # Full pipeline
 make install   # uv pip install -e .
 make build     # only needed for MODE=docker
-make run       # prepare-delta -> run-$(MODE) -> clean-tmp
+make run       # [prepare-delta ->] run-$(MODE) [-> clean-tmp]
 make clean
 ```
 
-`make run` dispatches on `MODE` (command-line var > `MODE=` in `.env` > `docker`;
-invalid value → `$(error)`):
-- `MODE=docker` → `docker compose run --rm reviewer`. The container's `CMD`
-  (Dockerfile) is `python run.py`; `docker-compose.yml` has **no `command:`**, it only
-  passes the `REVIEWER_*` / `PROVIDER` / … env vars through to the container (and sets
-  `SCRIPTS_PATH=/app/scripts_review` via Dockerfile `ENV`).
-- `MODE=local` → `python run.py` — runs in the repo `.venv`, no container.
+`make run` dispatches on two vars, each `command-line var > <VAR>= in .env > default`,
+invalid value → `$(error)`:
+- **`MODE`** (`docker` default | `local`) — where the CLI runs.
+  - `MODE=docker` → `docker compose run --rm reviewer`. The container's `CMD`
+    (Dockerfile) is `python run.py`; `docker-compose.yml` has **no `command:`**, it only
+    passes the `REVIEWER_*` / `PROVIDER` / … env vars through (and sets
+    `SCRIPTS_PATH=/app/scripts_review` via Dockerfile `ENV`).
+  - `MODE=local` → `python run.py` — runs in the repo `.venv`, no container.
+- **`SOURCE`** (`clone` default | `folder`) — where the scripts come from.
+  - `clone` → `prepare-delta` (clone + trim) before the run, `clean-tmp` after.
+  - `folder` → neither; the run uses `SCRIPTS_PATH` / `REVIEW_SCRIPTS_PATH` from `.env`
+    as-is. In the Makefile `PREPARE := $(if $(filter clone,$(SOURCE)),prepare-delta,)`
+    is the `run` prerequisite; `make.ps1` mirrors it in `Target-Run` via `Resolve-Source`.
 
 `run.py` is the single source of truth for the env-var → CLI-flag mapping.
 `run-docker` / `run-local` are also callable directly (without the prepare-delta /
 clean-tmp wrapper).
 
 `make.ps1` is the Windows port of the `Makefile` (same targets, no `make`/bash needed).
-Keep the two in sync when changing orchestration (targets, `MODE` dispatch, the
-prepare-delta trim rules).
+Keep the two in sync when changing orchestration (targets, `MODE` / `SOURCE` dispatch,
+the prepare-delta trim rules).
 `make.ps1` is ASCII-only on purpose — Windows PowerShell 5.1 misreads a BOM-less UTF-8
 script.
 

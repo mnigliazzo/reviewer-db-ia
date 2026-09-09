@@ -13,13 +13,24 @@ ifeq ($(filter $(MODE),docker local),)
 $(error MODE inválido: '$(MODE)'. Valores válidos: docker | local)
 endif
 
+# Origen de los scripts: clone (default, clona db-scripts y recorta al delta) |
+# folder (usa la carpeta que apunta el .env — SCRIPTS_PATH / REVIEW_SCRIPTS_PATH —
+# sin clonar ni recortar). Misma prioridad que MODE.
+SOURCE := $(strip $(or $(SOURCE),$(shell awk -F= '/^SOURCE=/{sub(/[ \t#\r].*/,"",$$2); print $$2; exit}' $(ENV_FILE_NAME) 2>/dev/null),clone))
+ifeq ($(filter $(SOURCE),clone folder),)
+$(error SOURCE inválido: '$(SOURCE)'. Valores válidos: clone | folder)
+endif
+
+PREPARE := $(if $(filter clone,$(SOURCE)),prepare-delta,)
+
 help:
 	@echo ""
 	@echo "  make install           — Instala deps con uv"
 	@echo "  make build             — Construye las imágenes Docker"
-	@echo "  make run               — Auditoría IA sobre el delta actual (MODE=$(MODE))"
+	@echo "  make run               — Auditoría IA (MODE=$(MODE)  SOURCE=$(SOURCE))"
 	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.py)"
 	@echo "  make run MODE=docker   — Igual, pero dentro del contenedor"
+	@echo "  make run SOURCE=folder — Usa la carpeta del .env directamente, sin clonar db-scripts"
 	@echo "  make clean             — Limpia contenedores y residuos temporales"
 	@echo ""
 
@@ -86,9 +97,10 @@ prepare-delta: check-env
 	done
 	@echo "✅ Filtro completado. Carpetas remanentes listas en $(FOLDER_TMP)"
 
-run: prepare-delta
+run: $(PREPARE)
+	@$(if $(PREPARE),,echo "📁 SOURCE=folder: uso la carpeta del .env, sin clonar db-scripts.")
 	@$(MAKE) --no-print-directory run-$(MODE)
-	@$(MAKE) --no-print-directory clean-tmp
+	@$(if $(PREPARE),$(MAKE) --no-print-directory clean-tmp,true)
 
 run-docker:
 	@echo "🤖 Lanzando agente de IA (docker) sobre el delta de migración..."
