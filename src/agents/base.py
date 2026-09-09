@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
 
 from ..skills import Skill, make_load_skill_tool, skills_header
@@ -28,11 +29,15 @@ def build_skill_agent(
     Lo comparten ``ReviewerAgent`` y ``CoherenceAgent``; sólo cambian el prompt de
     sistema y el schema de salida. El retry lo hace el modelo (``max_retries``) y el
     loop de tool calls lo acota el ``recursion_limit`` de langgraph — sin middleware.
+
+    ``ToolStrategy``: la salida estructurada es una tool que el modelo tiene que
+    llamar. Los modelos chicos no emiten JSON estructurado nativo de forma fiable
+    (la estrategia automática dejaba ``structured_response`` en ``None``).
     """
     system_prompt = f"{load_prompt(system_prompt_file)}\n\n{skills_header(skills)}"
     return create_agent(
         model,
         tools=[make_load_skill_tool(skills)],
         system_prompt=system_prompt,
-        response_format=response_format,
+        response_format=ToolStrategy(response_format),
     )
