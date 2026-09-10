@@ -49,11 +49,12 @@ prepare-delta: check-env
 	@echo "🚀 Iniciando preparación del entorno delta..."
 	@rm -rf $(FOLDER_TMP)
 	
-	@export GIT_USERNAME=$$(grep GIT_USER $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
-	 B64_PASS=$$(grep GIT_PASSWORD $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	@# '^' ancla al inicio: evita matchear lineas de comentario que contengan la clave.
+	@export GIT_USERNAME=$$(grep '^GIT_USER' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 B64_PASS=$$(grep '^GIT_PASSWORD' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 export GIT_PASSWORD=$$(echo "$$B64_PASS" | tr -d '\r\n' | base64 -d); \
-	 BRANCH=$$(grep GIT_BRANCH $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
-	 URL=$$(grep REPO_URL $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 BRANCH=$$(grep '^GIT_BRANCH' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 URL=$$(grep '^REPO_URL' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 \
 	 echo "📥 Clonando rama $$BRANCH de forma segura..."; \
 	 git -c core.longpaths=true clone --depth 1 -b "$$BRANCH" --single-branch "$$URL" $(FOLDER_TMP)

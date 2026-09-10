@@ -36,11 +36,16 @@ $FileVersion = 'current_db_version.txt'
 
 function Get-EnvValue([string]$pattern) {
     # Espeja  grep <pattern> .env | cut -d'=' -f2 | tr -d '\r\n'
+    # Ignora comentarios y lineas sin '=' (si no, [1] es null y .Trim() revienta).
     if (-not (Test-Path $EnvFile)) { return '' }
     # -Encoding UTF8: Windows PowerShell 5.1 lee UTF-8 como ANSI sin esto.
-    $line = Get-Content -LiteralPath $EnvFile -Encoding UTF8 | Where-Object { $_ -match $pattern } | Select-Object -First 1
+    $line = Get-Content -LiteralPath $EnvFile -Encoding UTF8 |
+        Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' -and $_ -match $pattern } |
+        Select-Object -First 1
     if (-not $line) { return '' }
-    return (($line -split '=', 2)[1]).Trim() -replace '[\r\n]', ''
+    $val = ($line -split '=', 2)[1]
+    if ($null -eq $val) { return '' }
+    return $val.Trim() -replace '[\r\n]', ''
 }
 
 function Resolve-Mode {
