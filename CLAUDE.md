@@ -126,12 +126,16 @@ the first two are a single LangChain **`create_agent`** run that loads skills vi
 `load_skill` tool and returns the structured schema (`ReviewOutput` / `CoherenceOutput`)
 as `result["structured_response"]`. No hand-rolled tool loop, no text parsing.
 
-There is no per-node safety net around the review or coherence work: a crashing review
-or coherence check (LLM error, schema-`ValidationError`) propagates out of the node and
-aborts the whole run with a non-zero exit — no synthetic `_REVIEW_FALLO` finding, no
-fail-safe not-approved. A genuine `INCOMPLETO` veredicto still flows through normally
-(→ `incoherent` → exit 1 with a clean message); only *exceptions* crash. The two
-exceptions: `mini_reporter_node` (falls back to a placeholder `MigrationReport`) and the
+`review_script` and `coherence` carry a langgraph `RetryPolicy` (`_LLM_RETRY`,
+`max_attempts=3`, `retry_on` = `RuntimeError` / `ValueError` / `ConnectionError` /
+`TimeoutError`): `create_agent` non-deterministically ends a turn with no structured
+output (`structured_response=None`), which `ReviewResult.from_output` / `analyze` turn
+into an explicit `RuntimeError` — retrying the node re-rolls `create_agent` and usually
+succeeds. **After** the retries are exhausted there is no further safety net: the
+exception propagates out of the node and aborts the whole run with a non-zero exit — no
+synthetic `_REVIEW_FALLO` finding, no fail-safe not-approved. A genuine `INCOMPLETO`
+veredicto still flows through normally (→ `incoherent` → exit 1 with a clean message).
+`mini_reporter_node` (falls back to a placeholder `MigrationReport`) and the
 `ReporterAgent` call in `main` swallow errors — the reports are informational and never
 gate the merge.
 
