@@ -13,13 +13,24 @@ ifeq ($(filter $(MODE),docker local),)
 $(error MODE inválido: '$(MODE)'. Valores válidos: docker | local)
 endif
 
+# Origen de los scripts: clone (default, clona db-scripts y recorta al delta) |
+# folder (usa la carpeta que apunta el .env — SCRIPTS_PATH / REVIEW_SCRIPTS_PATH —
+# sin clonar ni recortar). Misma prioridad que MODE.
+SOURCE := $(strip $(or $(SOURCE),$(shell awk -F= '/^SOURCE=/{sub(/[ \t#\r].*/,"",$$2); print $$2; exit}' $(ENV_FILE_NAME) 2>/dev/null),clone))
+ifeq ($(filter $(SOURCE),clone folder),)
+$(error SOURCE inválido: '$(SOURCE)'. Valores válidos: clone | folder)
+endif
+
+PREPARE := $(if $(filter clone,$(SOURCE)),prepare-delta,)
+
 help:
 	@echo ""
 	@echo "  make install           — Instala deps con uv"
 	@echo "  make build             — Construye las imágenes Docker"
-	@echo "  make run               — Auditoría IA sobre el delta actual (MODE=$(MODE))"
-	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.sh)"
+	@echo "  make run               — Auditoría IA (MODE=$(MODE)  SOURCE=$(SOURCE))"
+	@echo "  make run MODE=local    — Igual, pero corriendo el CLI en el venv local (via run.py)"
 	@echo "  make run MODE=docker   — Igual, pero dentro del contenedor"
+	@echo "  make run SOURCE=folder — Usa la carpeta del .env directamente, sin clonar db-scripts"
 	@echo "  make clean             — Limpia contenedores y residuos temporales"
 	@echo ""
 
@@ -38,11 +49,12 @@ prepare-delta: check-env
 	@echo "🚀 Iniciando preparación del entorno delta..."
 	@rm -rf $(FOLDER_TMP)
 	
-	@export GIT_USERNAME=$$(grep GIT_USER $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
-	 B64_PASS=$$(grep GIT_PASSWORD $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	@# '^' ancla al inicio: evita matchear lineas de comentario que contengan la clave.
+	@export GIT_USERNAME=$$(grep '^GIT_USER' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 B64_PASS=$$(grep '^GIT_PASSWORD' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 export GIT_PASSWORD=$$(echo "$$B64_PASS" | tr -d '\r\n' | base64 -d); \
-	 BRANCH=$$(grep GIT_BRANCH $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
-	 URL=$$(grep REPO_URL $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 BRANCH=$$(grep '^GIT_BRANCH' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
+	 URL=$$(grep '^REPO_URL' $(ENV_FILE_NAME) | cut -d'=' -f2 | tr -d '\r\n'); \
 	 \
 	 echo "📥 Clonando rama $$BRANCH de forma segura..."; \
 	 git -c core.longpaths=true clone --depth 1 -b "$$BRANCH" --single-branch "$$URL" $(FOLDER_TMP)
@@ -86,9 +98,10 @@ prepare-delta: check-env
 	done
 	@echo "✅ Filtro completado. Carpetas remanentes listas en $(FOLDER_TMP)"
 
-run: prepare-delta
+run: $(PREPARE)
+	@$(if $(PREPARE),,echo "📁 SOURCE=folder: uso la carpeta del .env, sin clonar db-scripts.")
 	@$(MAKE) --no-print-directory run-$(MODE)
-	@$(MAKE) --no-print-directory clean-tmp
+	@$(if $(PREPARE),$(MAKE) --no-print-directory clean-tmp,true)
 
 run-docker:
 	@echo "🤖 Lanzando agente de IA (docker) sobre el delta de migración..."
@@ -97,8 +110,8 @@ run-docker:
 
 run-local:
 	@echo "🤖 Lanzando agente de IA (local / venv) sobre el delta de migración..."
-	@# run.sh lee .env, elige el python del venv y arma los flags del CLI.
-	@bash run.sh
+	@# run.py lee .env, re-ejecuta con el python del venv y arma los flags del CLI.
+	@python run.py
 
 down: 
 	docker compose $(ENV_FILE) down

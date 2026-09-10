@@ -1,94 +1,52 @@
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
+from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
-from ..llm import resilient
-from ..models import CoherenceOutput, format_coherence
-from .base import load_prompt
+from ..models import CoherenceOutput
+from ..skills import load_skills
+from .base import build_skill_agent
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CoherenceResult:
-    report: str
-    approved: bool   # False si hay operaciones forward sin revertir
+_FINALIZE = HumanMessage(content=(
+    "Con todo lo analizado, devolvé ahora el análisis de coherencia como objeto "
+    "estructurado (resumen_forward, resumen_rollback, analisis_coherencia, "
+    "veredicto y operaciones_sin_revertir)."
+))
 
 
 class CoherenceAgent:
-    """
-    Agente de coherencia de migración.
+    """Decide si el rollback de una migración revierte todo lo que hace el
+    forward. Carga las skills que necesite y devuelve un ``CoherenceOutput``
+    estructurado. Se ejecuta una vez por migración."""
 
-    Dado el conjunto completo de scripts forward y rollback de una migración,
-    pide al LLM un veredicto estructurado (``CoherenceOutput``) con:
-      1. Resumen de qué hace el despliegue (forward)
-      2. Resumen de qué hace el rollback
-      3. Análisis operación por operación + veredicto COHERENTE / INCOMPLETO
-
-    Se ejecuta una vez por migración, después de que todos los scripts
-    individuales fueron revisados. Recibe el modelo base (sin envolver) y los
-    reintentos: ``with_structured_output`` debe aplicarse antes de ``resilient``.
-    """
-
-    def __init__(self, model: BaseChatModel, retries: int = 0):
-        self._structured = resilient(model.with_structured_output(CoherenceOutput), retries)
-        self._system_prompt = load_prompt("coherence_system.md")
+    def __init__(self, model: BaseChatModel, skills_base_path: Path):
+        self._agent, self._structured, self._system = build_skill_agent(
+            model,
+            load_skills(skills_base_path),
+            system_prompt_file="coherence_system.md",
+            response_format=CoherenceOutput,
+        )
 
     def analyze(
         self,
         migration: str,
         forward_scripts: list[tuple[str, str]],   # [(nombre_archivo, contenido), ...]
         rollback_scripts: list[tuple[str, str]],
-    ) -> CoherenceResult:
-        """
-        Analiza la coherencia entre forward y rollback de una migración.
+    ) -> CoherenceOutput:
+        forward_block = "\n\n".join(f"--- {name} ---\n{content}" for name, content in forward_scripts)
+        rollback_block = "\n\n".join(
+            f"--- {name} ---\n{content}" for name, content in rollback_scripts
+        ) or "(No se encontraron scripts de rollback para esta migración)"
 
-        Args:
-            migration: nombre/id de la migración (ej: "20260407112400")
-            forward_scripts: lista de (nombre_archivo, contenido_sql) de scripts forward
-            rollback_scripts: lista de (nombre_archivo, contenido_sql) de scripts rollback
-        """
-        if not forward_scripts:
-            report = (
-                f"MIGRACION: {migration}\n\n"
-                "No hay scripts de despliegue forward para analizar."
-            )
-            return CoherenceResult(report=report, approved=True)
-
-        forward_block = "\n\n".join(
-            f"--- {name} ---\n{content}" for name, content in forward_scripts
+        prompt = (
+            f"Analiza la coherencia de la migración: {migration}\n\n"
+            f"=== SCRIPTS DE DESPLIEGUE (FORWARD) ===\n\n{forward_block}\n\n"
+            f"=== SCRIPTS DE ROLLBACK ===\n\n{rollback_block}"
         )
-
-        if rollback_scripts:
-            rollback_block = "\n\n".join(
-                f"--- {name} ---\n{content}" for name, content in rollback_scripts
-            )
-        else:
-            rollback_block = "(No se encontraron scripts de rollback para esta migración)"
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(
-                content=(
-                    f"Analiza la siguiente migración: {migration}\n\n"
-                    f"=== SCRIPTS DE DESPLIEGUE (FORWARD) ===\n\n"
-                    f"{forward_block}\n\n"
-                    f"=== SCRIPTS DE ROLLBACK ===\n\n"
-                    f"{rollback_block}"
-                )
-            ),
-        ]
-
-        logger.info(f"CoherenceAgent analizando migración {migration} "
-                    f"({len(forward_scripts)} forward, {len(rollback_scripts)} rollback)")
-
-        result = self._structured.invoke(messages)
-        if not isinstance(result, CoherenceOutput):
-            # algunos providers devuelven dict si el schema no se respeta del todo
-            result = CoherenceOutput.model_validate(result)
-
-        return CoherenceResult(report=format_coherence(result), approved=result.approved)
+        state = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
+        output = self._structured.invoke([self._system, *state["messages"], _FINALIZE])
+        if output is None:
+            raise RuntimeError("coherence: el modelo no devolvió salida estructurada")
+        return CoherenceOutput.model_validate(output)

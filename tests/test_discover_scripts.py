@@ -1,3 +1,5 @@
+import pytest
+
 from src.main import build_migrations_queue, discover_scripts
 
 
@@ -44,19 +46,10 @@ def test_build_migrations_queue_reads_content_once(tmp_path):
     assert rollback == [("001.DropTable.sql", "DROP TABLE Foo;")]
 
 
-def test_build_migrations_queue_skips_unreadable(tmp_path, monkeypatch):
-    _build_layout(tmp_path)
+def test_build_migrations_queue_raises_on_unreadable(tmp_path):
+    mig = _build_layout(tmp_path)
     scripts = discover_scripts(tmp_path)
+    (mig / "002.SeedData.sql").unlink()   # se vuelve ilegible después del discovery
 
-    import src.main as main_mod
-
-    real_read = main_mod._read_text
-
-    def fake_read(path):
-        if path.name == "002.SeedData.sql":
-            return None
-        return real_read(path)
-
-    monkeypatch.setattr(main_mod, "_read_text", fake_read)
-    _, forward, _ = build_migrations_queue(scripts)[0]
-    assert [fc[0].file.name for fc in forward] == ["001.CreateTable.sql"]
+    with pytest.raises(OSError):
+        build_migrations_queue(scripts)

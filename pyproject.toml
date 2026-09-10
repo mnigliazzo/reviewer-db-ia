@@ -4,12 +4,13 @@ version = "0.1.0"
 description = "Reviewer DB Agent"
 requires-python = ">=3.12"
 dependencies = [
-    "langchain",
-    "langchain-core",
-    "langchain-ollama",
-    "langchain-openai",
-    "langgraph",
-    "pydantic",
+    "langchain>=1.4",
+    "langchain-core>=1.6",
+    "langchain-ollama>=1.0",
+    "langchain-openai>=1.0",
+    "langgraph>=1.0",
+    "pydantic>=2.9",
+    "python-frontmatter>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -32,5 +33,5 @@ line-length = 110
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 ignore = ["E501"]

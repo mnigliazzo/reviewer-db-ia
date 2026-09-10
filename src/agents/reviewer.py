@@ -3,58 +3,45 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
-from ..llm import resilient
-from ..models import ReviewOutput, SqlScript
-from ..skill_middleware import build_skills_header, load_skills_from_disk, make_load_skill_tool
-from .base import load_prompt
+from ..models import ReviewOutput, ReviewResult, SqlScript
+from ..skills import load_skills, skill_calls
+from .base import build_skill_agent
 
-_FINALIZE_INSTRUCTION = (
+_FINALIZE = HumanMessage(content=(
     "Con todo lo revisado, devolvé ahora el review como objeto estructurado "
     "(seguridad, rendimiento, mantenibilidad y la lista de hallazgos). "
     "Si no hay hallazgos válidos, devolvé la lista vacía."
-)
+))
 
 
 class ReviewerAgent:
+    """Revisa un script SQL: carga las skills que necesite y devuelve un
+    ``ReviewResult`` estructurado."""
 
-    def __init__(self, model: BaseChatModel, skills_base_path: Path, retries: int = 0):
-        self._skills = load_skills_from_disk(skills_base_path)
-        self.load_skill_tool = make_load_skill_tool(self._skills)
-        self.model_with_tools = resilient(model.bind_tools([self.load_skill_tool]), retries)
-        self._structured = resilient(model.with_structured_output(ReviewOutput), retries)
-        self._system_prompt = load_prompt("reviewer_system.md") + build_skills_header(self._skills)
+    def __init__(self, model: BaseChatModel, skills_base_path: Path):
+        self._agent, self._structured, self._system = build_skill_agent(
+            model,
+            load_skills(skills_base_path),
+            system_prompt_file="reviewer_system.md",
+            response_format=ReviewOutput,
+        )
 
-    def build_messages(
+    def review(
         self,
         script: SqlScript,
         sql_content: str,
         schema_context: str = "",
-    ) -> list:
-        parts = [
+    ) -> ReviewResult:
+        prompt = (
             f"Revisa el siguiente script de SQL Server.\n"
-            f"Migracion: {script.migration} | Archivo: {script.file.name}\n",
-        ]
+            f"Migracion: {script.migration} | Archivo: {script.file.name}\n"
+        )
         if schema_context:
-            parts.append(f"{schema_context}\n")
-        parts.append(
-            f"{sql_content}\n\n"
-            "Cargá las skills necesarias con load_skill() y revisá el script. "
-            "Cuando termines de cargar skills, se te pedirá el review estructurado."
-        )
+            prompt += f"\n{schema_context}\n"
+        prompt += f"\n{sql_content}"
 
-        return [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content="\n".join(parts)),
-        ]
-
-    def finalize(self, messages: list) -> ReviewOutput:
-        """Segunda fase: pide el review como objeto estructurado (sin tools)."""
-        result = self._structured.invoke(
-            messages + [HumanMessage(content=_FINALIZE_INSTRUCTION)]
-        )
-        if not isinstance(result, ReviewOutput):
-            # algunos providers devuelven dict si el schema no se respeta del todo
-            result = ReviewOutput.model_validate(result)
-        return result
+        state = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
+        output = self._structured.invoke([self._system, *state["messages"], _FINALIZE])
+        return ReviewResult.from_output(output, skill_calls(state["messages"]))

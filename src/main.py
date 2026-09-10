@@ -5,9 +5,10 @@ import sys
 from pathlib import Path
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReporterAgent, ReviewerAgent
-from .graph import build_pipeline_graph
-from .llm import CLOUD_PROVIDERS, SUPPORTED_PROVIDERS, build_model, resilient
-from .models import PRIORIDADES, ScriptReview, SqlScript
+from .graph import build_migration_graph, build_migration_states
+from .llm import CLOUD_PROVIDERS, SUPPORTED_PROVIDERS, build_model
+from .logging_utils import banner
+from .models import Prioridad, ScriptReview, SqlScript
 from .sarif import to_sarif
 
 logger = logging.getLogger(__name__)
@@ -45,15 +46,6 @@ def discover_scripts(scripts_path: Path) -> list[SqlScript]:
     return scripts
 
 
-def _read_text(path: Path) -> str | None:
-    """Lee un archivo SQL como UTF-8. Devuelve ``None`` (y loguea) si falla."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.error(f"No se pudo leer {path}: {exc}")
-        return None
-
-
 def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
     """Agrupa los scripts por migración y precarga su contenido una sola vez.
 
@@ -70,9 +62,7 @@ def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
         forward: list[tuple[SqlScript, str]] = []
         rollback: list[tuple[str, str]] = []
         for s in migration_scripts:
-            content = _read_text(s.file)
-            if content is None:
-                continue
+            content = s.file.read_text(encoding="utf-8")
             if s.is_rollback:
                 rollback.append((s.file.name, content))
             else:
@@ -84,7 +74,7 @@ def build_migrations_queue(scripts: list[SqlScript]) -> list[tuple]:
 def decide_exit(
     all_reviews: list[ScriptReview],
     incoherent_migrations: list[str],
-    fail_on: set[str],
+    fail_on: set[Prioridad],
 ) -> tuple[int, list[str]]:
     """Decide el exit code según la política ``--fail-on`` + rollback incompleto.
 
@@ -117,11 +107,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-agent",   type=str, required=True,  help="AI Model name")
     parser.add_argument("--api-key",       type=str,                 help="API key (requerido para providers cloud)")
     parser.add_argument("--skip-reporter",      action="store_true",  help="Omitir informe ejecutivo final")
-    parser.add_argument("--max-tool-rounds",    type=int, default=0, help="Max rondas de tool calls por script (0 = ilimitado)")
     parser.add_argument("--max-schema-scripts", type=int, default=0, help="Max scripts previos en el schema context (0 = ilimitado)")
     parser.add_argument("--temperature",        type=float, default=0.0, help="Temperature del modelo (default 0 = determinista)")
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
-    parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos por llamada al LLM ante error transitorio")
+    parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos con backoff por llamada al LLM (solo providers cloud; ollama no tiene retry nativo)")
+    parser.add_argument("--num-ctx",            type=int, default=32768, help="Tamaño de contexto de ollama (num_ctx); ignorado para providers cloud")
+    parser.add_argument("--max-concurrency",    type=int, default=1, help="Llamadas LLM en paralelo (se multiplica por el fan-out; 1 = todo en serie)")
     parser.add_argument("--fail-on",            type=str, default="CRÍTICO",
                         help="Prioridades que hacen fallar el pipeline (CSV). Default: CRÍTICO")
     parser.add_argument("--sarif",              type=str, help="Escribe el reporte SARIF 2.1.0 en esta ruta")
@@ -131,17 +122,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.provider in CLOUD_PROVIDERS and not args.api_key:
         parser.error(f"--api-key es requerido para el provider '{args.provider}'")
-    if args.max_tool_rounds < 0:
-        parser.error("--max-tool-rounds no puede ser negativo (0 = ilimitado)")
     if args.max_schema_scripts < 0:
         parser.error("--max-schema-scripts no puede ser negativo (0 = ilimitado)")
     if args.llm_retries < 0:
         parser.error("--llm-retries no puede ser negativo")
+    if args.num_ctx <= 0:
+        parser.error("--num-ctx tiene que ser > 0")
+    if args.max_concurrency < 1:
+        parser.error("--max-concurrency tiene que ser >= 1")
 
-    args.fail_on_set = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
-    unknown = args.fail_on_set - set(PRIORIDADES)
+    raw = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
+    valid = {p.value for p in Prioridad}
+    unknown = raw - valid
     if unknown:
-        parser.error(f"--fail-on: prioridades desconocidas {sorted(unknown)}. Válidas: {list(PRIORIDADES)}")
+        parser.error(f"--fail-on: prioridades desconocidas {sorted(unknown)}. Válidas: {sorted(valid)}")
+    args.fail_on_set = {Prioridad(p) for p in raw}
     return args
 
 
@@ -173,32 +168,35 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"Initializing agents — provider: {args.provider}  model: {args.model_agent}")
     model = build_model(
         args.provider, args.base_url, args.model_agent, args.api_key,
-        temperature=args.temperature, timeout=args.llm_timeout,
+        temperature=args.temperature, timeout=args.llm_timeout, retries=args.llm_retries,
+        num_ctx=args.num_ctx,
     )
-    resilient_model = resilient(model, args.llm_retries)
-    pipeline_graph = build_pipeline_graph(
-        reviewer            = ReviewerAgent(model, SKILLS_BASE_PATH, retries=args.llm_retries),
-        coherence_agent     = CoherenceAgent(model, retries=args.llm_retries),
-        mini_reporter_agent = MiniReporterAgent(resilient_model),
-        reporter_agent      = ReporterAgent(resilient_model) if not args.skip_reporter else None,
-        max_tool_rounds     = args.max_tool_rounds,
-        max_schema_scripts  = args.max_schema_scripts,
+    migration_graph = build_migration_graph(
+        ReviewerAgent(model, SKILLS_BASE_PATH),
+        CoherenceAgent(model, SKILLS_BASE_PATH),
+        MiniReporterAgent(model),
     )
 
-    migrations_queue = build_migrations_queue(scripts)
+    states = build_migration_states(build_migrations_queue(scripts), args.max_schema_scripts)
+    # OJO: max_concurrency se MULTIPLICA por el fan-out anidado -> N migraciones en
+    # paralelo x N review_script cada una. 1 (default) = todo en serie, que es lo que
+    # le sirve a un ollama de una instancia. Subir solo si el backend paraleliza de
+    # verdad (OLLAMA_NUM_PARALLEL, cloud).
+    results = migration_graph.batch(states, config={"max_concurrency": args.max_concurrency})
 
-    result = pipeline_graph.invoke({
-        "migrations_queue": migrations_queue,
-        "previous_scripts": [],
-        "all_reviews": [],
-        "migration_reports": [],
-        "incoherent_migrations": [],
-        "has_critical": False,
-        "final_report": "",
-    })
+    all_reviews = [review for res in results for review in res["reviews"]]
+    reports = [res["report"] for res in results if res["report"] is not None]
+    incoherent = [
+        res["migration_id"] for res in results
+        if res["coherence"] is not None and not res["coherence"].approved
+    ]
 
-    all_reviews = result.get("all_reviews", [])
-    incoherent = result.get("incoherent_migrations", [])
+    if not args.skip_reporter:
+        banner(logger, "INFORME EJECUTIVO FINAL", "#")
+        try:
+            logger.info(ReporterAgent(model).summarize(reports))
+        except Exception:  # noqa: BLE001 - el informe es informativo, no bloquea
+            logger.exception("El informe ejecutivo final falló")
 
     if args.sarif:
         sarif_path = Path(args.sarif)

@@ -1,83 +1,81 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from statistics import mean
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-# Prioridades válidas de un hallazgo, en orden de severidad descendente.
-PRIORIDADES = ("CRÍTICO", "ALTO", "MEDIO", "BAJO", "MEJORA", "OBSERVACION")
-Prioridad = Literal["CRÍTICO", "ALTO", "MEDIO", "BAJO", "MEJORA", "OBSERVACION"]
 
-# Variantes que devuelven algunos modelos -> prioridad canónica.
-_PRIORIDAD_ALIAS = {
-    "CRITICO": "CRÍTICO", "CRITICA": "CRÍTICO", "CRÍTICA": "CRÍTICO", "CRITICAL": "CRÍTICO",
-    "ALTA": "ALTO", "HIGH": "ALTO",
-    "MEDIA": "MEDIO", "MEDIUM": "MEDIO", "MED": "MEDIO",
-    "BAJA": "BAJO", "LOW": "BAJO", "MINOR": "BAJO",
-    "MEJORAS": "MEJORA", "IMPROVEMENT": "MEJORA",
-    "OBSERVACIÓN": "OBSERVACION", "OBSERVACIONES": "OBSERVACION",
-    "INFO": "OBSERVACION", "NOTE": "OBSERVACION", "NOTA": "OBSERVACION",
+class Prioridad(StrEnum):
+    """Severidad de un hallazgo, en orden descendente.
+
+    Es el enum del schema de salida estructurada: el LLM debe devolver
+    exactamente uno de estos valores. Un valor fuera del set es un
+    ``ValidationError`` — no se normaliza ni se mapea nada en Python.
+    """
+
+    CRITICO = "CRÍTICO"
+    ALTO = "ALTO"
+    MEDIO = "MEDIO"
+    BAJO = "BAJO"
+    MEJORA = "MEJORA"
+    OBSERVACION = "OBSERVACION"
+
+    @property
+    def sarif_level(self) -> str:
+        return _SARIF_LEVEL[self]
+
+
+_SARIF_LEVEL = {
+    Prioridad.CRITICO: "error",
+    Prioridad.ALTO: "error",
+    Prioridad.MEDIO: "warning",
+    Prioridad.BAJO: "warning",
+    Prioridad.MEJORA: "note",
+    Prioridad.OBSERVACION: "note",
 }
 
 
-def normalize_prioridad(value: object) -> str:
-    """Mapea el valor del modelo a una prioridad canónica; default OBSERVACION."""
-    s = str(value or "").strip().upper()
-    if s in PRIORIDADES:
-        return s
-    return _PRIORIDAD_ALIAS.get(s, "OBSERVACION")
+class Veredicto(StrEnum):
+    """Resultado del análisis de coherencia forward / rollback."""
+
+    COHERENTE = "COHERENTE"
+    INCOMPLETO = "INCOMPLETO"
 
 
 class Finding(BaseModel):
-    """Un hallazgo del review. Es parte del schema de salida estructurada del LLM.
+    """Un hallazgo del review. Parte del schema de salida estructurada del LLM."""
 
-    Todos los campos tienen default y ``prioridad`` se normaliza: los modelos
-    chicos a veces devuelven hallazgos a medias o con etiquetas no canónicas y
-    no queremos que eso invalide el review entero.
-    """
-
-    prioridad: str = Field(
-        default="OBSERVACION",
-        description="Severidad: CRÍTICO | ALTO | MEDIO | BAJO | MEJORA | OBSERVACION",
-        json_schema_extra={"enum": list(PRIORIDADES)},
-    )
+    prioridad: Prioridad = Field(description="Severidad del hallazgo")
     categoria: str = Field(default="general", description="Categoría corta, ej: Seguridad, Rendimiento")
     skill: str = Field(default="-", description="Nombre de la skill que lo detectó, o '-'")
-    titulo: str = Field(default="", description="Título breve del hallazgo")
+    titulo: str = Field(min_length=1, description="Título breve del hallazgo")
     ubicacion: str = Field(default="", description="Dónde en el script (texto libre)")
     linea: int | None = Field(default=None, description="Número de línea, o null si no aplica")
-    riesgo: str = Field(default="", description="Qué puede salir mal")
-    recomendacion: str = Field(default="", description="Cómo corregirlo")
+    riesgo: str = Field(min_length=1, description="Qué puede salir mal")
+    recomendacion: str = Field(min_length=1, description="Cómo corregirlo")
 
-    @field_validator("prioridad", mode="before")
-    @classmethod
-    def _norm_prioridad(cls, v: object) -> str:
-        return normalize_prioridad(v)
-
-    @property
-    def is_empty(self) -> bool:
-        """Hallazgo sin contenido útil (el modelo lo empezó y no lo completó)."""
-        return not (self.titulo.strip() or self.riesgo.strip() or self.recomendacion.strip())
+    def render(self) -> str:
+        loc = self.ubicacion
+        if self.linea is not None:
+            loc = f"{loc} (línea {self.linea})".strip()
+        lineas = [f"[{self.prioridad}] [{self.categoria}] [{self.skill}]: {self.titulo}"]
+        if loc:
+            lineas.append(f"  Ubicacion: {loc}")
+        lineas.append(f"  Riesgo: {self.riesgo}")
+        lineas.append(f"  Recomendacion: {self.recomendacion}")
+        return "\n".join(lineas)
 
 
 class ReviewOutput(BaseModel):
     """Schema que el ReviewerAgent le pide al LLM vía ``with_structured_output``."""
 
-    seguridad: int = Field(default=5, description="Puntaje de seguridad 0-10")
-    rendimiento: int = Field(default=5, description="Puntaje de rendimiento 0-10")
-    mantenibilidad: int = Field(default=5, description="Puntaje de mantenibilidad 0-10")
+    seguridad: int = Field(ge=0, le=10, description="Puntaje de seguridad 0-10")
+    rendimiento: int = Field(ge=0, le=10, description="Puntaje de rendimiento 0-10")
+    mantenibilidad: int = Field(ge=0, le=10, description="Puntaje de mantenibilidad 0-10")
     hallazgos: list[Finding] = Field(default_factory=list)
-
-    @field_validator("seguridad", "rendimiento", "mantenibilidad", mode="before")
-    @classmethod
-    def _clamp_score(cls, v: object) -> int:
-        try:
-            n = int(v)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return 5
-        return max(0, min(10, n))
 
 
 class ReviewResult(ReviewOutput):
@@ -85,28 +83,34 @@ class ReviewResult(ReviewOutput):
 
     skills_utilizadas: list[str] = Field(default_factory=list)
 
-    @property
-    def has_critical(self) -> bool:
-        return any(f.prioridad == "CRÍTICO" for f in self.hallazgos)
-
     @classmethod
-    def from_output(cls, output: ReviewOutput, skills_utilizadas: list[str]) -> ReviewResult:
-        return cls(
-            seguridad=output.seguridad,
-            rendimiento=output.rendimiento,
-            mantenibilidad=output.mantenibilidad,
-            hallazgos=[h for h in output.hallazgos if not h.is_empty],
-            skills_utilizadas=skills_utilizadas,
+    def from_output(cls, output: ReviewOutput | dict | None, skills_utilizadas: list[str]) -> ReviewResult:
+        if output is None:
+            raise RuntimeError("el reviewer no devolvió salida estructurada")
+        # ``with_structured_output`` devuelve el modelo o un dict según el provider.
+        output = ReviewOutput.model_validate(output)
+        return cls(**output.model_dump(), skills_utilizadas=skills_utilizadas)
+
+    def render(self) -> str:
+        """Render legible para logs y para el contexto del MiniReporterAgent."""
+        cabecera = (
+            f"Seguridad: {self.seguridad}/10   "
+            f"Rendimiento: {self.rendimiento}/10   "
+            f"Mantenibilidad: {self.mantenibilidad}/10"
         )
+        if not self.hallazgos:
+            return f"{cabecera}\n\nSin hallazgos."
+        return f"{cabecera}\n\n" + "\n\n".join(h.render() for h in self.hallazgos)
 
 
 class CoherenceOutput(BaseModel):
     """Schema que el CoherenceAgent le pide al LLM vía ``with_structured_output``.
 
-    ``veredicto`` se normaliza a COHERENTE / INCOMPLETO: cualquier valor que no
-    sea exactamente COHERENTE cae en INCOMPLETO (fail-safe — un rollback no
-    verificable bloquea el merge). El default también es INCOMPLETO, así un
-    modelo que no devuelve veredicto no aprueba por omisión.
+    ``veredicto`` es un enum estricto: sin normalización ni alias. Un valor fuera
+    del set es un ``ValidationError`` que sube desde ``coherence_node`` y aborta la
+    corrida (sin red de seguridad). El default ``INCOMPLETO`` sí se mantiene: un
+    modelo que omite el campo no aprueba por omisión. Que el modelo devuelva la
+    palabra exacta es responsabilidad de la skill ``rollback-coherence``.
     """
 
     resumen_forward: str = Field(
@@ -121,24 +125,37 @@ class CoherenceOutput(BaseModel):
         default="",
         description="Operación por operación: si cada cambio del forward tiene su contraparte en el rollback",
     )
-    veredicto: str = Field(
-        default="INCOMPLETO",
+    veredicto: Veredicto = Field(
+        default=Veredicto.INCOMPLETO,
         description='EXACTAMENTE "COHERENTE" o "INCOMPLETO"',
-        json_schema_extra={"enum": ["COHERENTE", "INCOMPLETO"]},
     )
     operaciones_sin_revertir: list[str] = Field(
         default_factory=list,
         description="Operaciones del forward que el rollback no revierte (vacía si es COHERENTE)",
     )
 
-    @field_validator("veredicto", mode="before")
-    @classmethod
-    def _norm_veredicto(cls, v: object) -> str:
-        return "COHERENTE" if str(v or "").strip().upper() == "COHERENTE" else "INCOMPLETO"
-
     @property
     def approved(self) -> bool:
-        return self.veredicto == "COHERENTE"
+        return self.veredicto is Veredicto.COHERENTE
+
+    def render(self) -> str:
+        """Render legible para logs y para el contexto del MiniReporterAgent."""
+        lineas = [
+            "DESPLIEGUE (FORWARD)",
+            f"  {self.resumen_forward or 'Sin informacion.'}",
+            "",
+            "ROLLBACK",
+            f"  {self.resumen_rollback or 'Sin informacion.'}",
+            "",
+            "COHERENCIA",
+            f"  {self.analisis_coherencia or 'Sin informacion.'}",
+            "",
+            f"RESULTADO: {self.veredicto}",
+        ]
+        if self.operaciones_sin_revertir:
+            lineas.append("Operaciones sin revertir:")
+            lineas += [f"  - {op}" for op in self.operaciones_sin_revertir]
+        return "\n".join(lineas)
 
 
 @dataclass
@@ -153,55 +170,69 @@ class ScriptReview:
     script: SqlScript
     result: ReviewResult
 
-    @property
-    def skills_used(self) -> list[str]:
-        return self.result.skills_utilizadas
 
+@dataclass
+class MigrationReport:
+    """Informe de una migración: métricas calculadas en Python desde los hallazgos
+    estructurados + el resumen narrativo del LLM. No es un schema de salida del LLM."""
 
-def format_review(result: ReviewResult) -> str:
-    """Render legible de un ``ReviewResult`` para logs y para el contexto del
-    MiniReporterAgent (reemplaza al viejo ``raw_text``)."""
-    lines = [
-        f"Seguridad: {result.seguridad}/10   "
-        f"Rendimiento: {result.rendimiento}/10   "
-        f"Mantenibilidad: {result.mantenibilidad}/10",
-        "",
-    ]
-    if not result.hallazgos:
-        lines.append("Sin hallazgos.")
-        return "\n".join(lines)
+    migration_id: str
+    scripts_revisados: int
+    prom_seguridad: float | None
+    prom_rendimiento: float | None
+    prom_mantenibilidad: float | None
+    rollback_coherente: bool
+    hallazgos_altos: list[str]        # ["[PRIORIDAD] archivo: titulo", ...]
+    resumen_ejecutivo: str
 
-    for f in result.hallazgos:
-        loc = f.ubicacion or ""
-        if f.linea is not None:
-            loc = f"{loc} (línea {f.linea})".strip()
-        lines.append(f"[{f.prioridad}] [{f.categoria}] [{f.skill}]: {f.titulo}")
-        if loc:
-            lines.append(f"  Ubicacion: {loc}")
-        if f.riesgo:
-            lines.append(f"  Riesgo: {f.riesgo}")
-        if f.recomendacion:
-            lines.append(f"  Recomendacion: {f.recomendacion}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    @classmethod
+    def build(
+        cls,
+        migration_id: str,
+        reviews: list[ScriptReview],
+        coherence: CoherenceOutput | None,
+        resumen_ejecutivo: str,
+    ) -> MigrationReport:
+        def promedio(attr: str) -> float | None:
+            valores = [getattr(r.result, attr) for r in reviews]
+            return round(float(mean(valores)), 1) if valores else None
 
+        return cls(
+            migration_id=migration_id,
+            scripts_revisados=len(reviews),
+            prom_seguridad=promedio("seguridad"),
+            prom_rendimiento=promedio("rendimiento"),
+            prom_mantenibilidad=promedio("mantenibilidad"),
+            rollback_coherente=coherence.approved if coherence else True,
+            hallazgos_altos=[
+                f"[{f.prioridad}] {r.script.file.name}: {f.titulo}"
+                for r in reviews
+                for f in r.result.hallazgos
+                if f.prioridad in (Prioridad.CRITICO, Prioridad.ALTO)
+            ],
+            resumen_ejecutivo=resumen_ejecutivo,
+        )
 
-def format_coherence(output: CoherenceOutput) -> str:
-    """Render legible de un ``CoherenceOutput`` para logs y para el contexto del
-    MiniReporterAgent (reemplaza al informe en prosa que antes generaba el LLM)."""
-    lines = [
-        "DESPLIEGUE (FORWARD)",
-        f"  {output.resumen_forward or 'Sin informacion.'}",
-        "",
-        "ROLLBACK",
-        f"  {output.resumen_rollback or 'Sin informacion.'}",
-        "",
-        "COHERENCIA",
-        f"  {output.analisis_coherencia or 'Sin informacion.'}",
-        "",
-        f"RESULTADO: {output.veredicto}",
-    ]
-    if output.operaciones_sin_revertir:
-        lines.append("Operaciones sin revertir:")
-        lines += [f"  - {op}" for op in output.operaciones_sin_revertir]
-    return "\n".join(lines)
+    def render(self) -> str:
+        """Layout de texto para logs y como input del informe ejecutivo final."""
+        def score(v: float | None) -> str:
+            return f"{v:.1f}/10" if v is not None else "N/A"
+
+        lineas = [
+            f"MIGRACIÓN {self.migration_id}",
+            "",
+            "ESTADISTICAS",
+            f"  Scripts revisados:        {self.scripts_revisados}",
+            f"  Promedio Seguridad:       {score(self.prom_seguridad)}",
+            f"  Promedio Rendimiento:     {score(self.prom_rendimiento)}",
+            f"  Promedio Mantenibilidad:  {score(self.prom_mantenibilidad)}",
+            "",
+            f"ESTADO ROLLBACK: {'COHERENTE' if self.rollback_coherente else 'INCOMPLETO'}",
+            "",
+            "HALLAZGOS CRITICOS Y ALTOS",
+            *([f"  {h}" for h in self.hallazgos_altos] or ["  Ninguno"]),
+            "",
+            "RESUMEN EJECUTIVO",
+            f"  {self.resumen_ejecutivo}",
+        ]
+        return "\n".join(lineas)

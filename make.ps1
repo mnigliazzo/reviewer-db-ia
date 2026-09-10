@@ -1,6 +1,6 @@
 <#
   Equivalente del Makefile para Windows (no requiere make ni bash).
-  Espeja los targets del Makefile igual que run.ps1 espeja run.sh.
+  Espeja los targets del Makefile. El entrypoint del CLI es run.py (comun a ambos).
   Solo ASCII: Windows PowerShell 5.1 sin BOM interpreta el script como ANSI.
 
   Uso:
@@ -17,7 +17,10 @@ param(
     [string]$Target = 'help',
 
     [ValidateSet('docker', 'local')]
-    [string]$Mode
+    [string]$Mode,
+
+    [ValidateSet('clone', 'folder')]
+    [string]$Source
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,10 +36,16 @@ $FileVersion = 'current_db_version.txt'
 
 function Get-EnvValue([string]$pattern) {
     # Espeja  grep <pattern> .env | cut -d'=' -f2 | tr -d '\r\n'
+    # Ignora comentarios y lineas sin '=' (si no, [1] es null y .Trim() revienta).
     if (-not (Test-Path $EnvFile)) { return '' }
-    $line = Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match $pattern } | Select-Object -First 1
+    # -Encoding UTF8: Windows PowerShell 5.1 lee UTF-8 como ANSI sin esto.
+    $line = Get-Content -LiteralPath $EnvFile -Encoding UTF8 |
+        Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' -and $_ -match $pattern } |
+        Select-Object -First 1
     if (-not $line) { return '' }
-    return (($line -split '=', 2)[1]).Trim() -replace '[\r\n]', ''
+    $val = ($line -split '=', 2)[1]
+    if ($null -eq $val) { return '' }
+    return $val.Trim() -replace '[\r\n]', ''
 }
 
 function Resolve-Mode {
@@ -49,6 +58,18 @@ function Resolve-Mode {
         return $fromEnv
     }
     return 'docker'
+}
+
+function Resolve-Source {
+    if ($Source) { return $Source }
+    $fromEnv = (Get-EnvValue '^SOURCE=') -replace '\s*#.*$', ''
+    if ($fromEnv) {
+        if ($fromEnv -notin @('clone', 'folder')) {
+            throw "SOURCE invalido: '$fromEnv'. Valores validos: clone | folder"
+        }
+        return $fromEnv
+    }
+    return 'clone'
 }
 
 function Invoke-Native([Parameter(Mandatory)][scriptblock]$Cmd) {
@@ -69,10 +90,11 @@ function Target-Help {
     Write-Host ''
     Write-Host '  .\make.ps1 install           - Instala deps con uv'
     Write-Host '  .\make.ps1 build             - Construye las imagenes Docker'
-    Write-Host "  .\make.ps1 run               - Auditoria IA sobre el delta actual (MODE=$(Resolve-Mode))"
-    Write-Host '  .\make.ps1 run -Mode local   - Igual, pero corriendo el CLI en el venv local (via run.ps1)'
-    Write-Host '  .\make.ps1 run -Mode docker  - Igual, pero dentro del contenedor'
-    Write-Host '  .\make.ps1 clean             - Limpia contenedores y residuos temporales'
+    Write-Host "  .\make.ps1 run                 - Auditoria IA (MODE=$(Resolve-Mode)  SOURCE=$(Resolve-Source))"
+    Write-Host '  .\make.ps1 run -Mode local     - Igual, pero corriendo el CLI en el venv local (via run.py)'
+    Write-Host '  .\make.ps1 run -Mode docker    - Igual, pero dentro del contenedor'
+    Write-Host '  .\make.ps1 run -Source folder  - Usa la carpeta del .env directamente, sin clonar db-scripts'
+    Write-Host '  .\make.ps1 clean               - Limpia contenedores y residuos temporales'
     Write-Host ''
 }
 
@@ -160,18 +182,21 @@ function Target-RunDocker {
 
 function Target-RunLocal {
     Write-Host '>> Lanzando agente de IA (local / venv) sobre el delta...'
-    & (Join-Path $PSScriptRoot 'run.ps1')
-    if ($LASTEXITCODE -ne 0) { throw "run.ps1 salio con codigo $LASTEXITCODE" }
+    # run.py lee .env, re-ejecuta con el python del venv y arma los flags del CLI.
+    & python (Join-Path $PSScriptRoot 'run.py')
+    if ($LASTEXITCODE -ne 0) { throw "run.py salio con codigo $LASTEXITCODE" }
 }
 
 function Target-Run {
-    Target-PrepareDelta
+    $clone = (Resolve-Source) -eq 'clone'
+    if ($clone) { Target-PrepareDelta }
+    else { Write-Host '>> SOURCE=folder: uso la carpeta del .env, sin clonar db-scripts.' }
     $failed = $null
     try {
         if ((Resolve-Mode) -eq 'local') { Target-RunLocal } else { Target-RunDocker }
     }
     catch { $failed = $_ }
-    finally { Target-CleanTmp }
+    finally { if ($clone) { Target-CleanTmp } }
     if ($failed) { throw $failed }
 }
 

@@ -26,9 +26,10 @@ COPY . /app
 # Instalar el proyecto en modo editable
 RUN uv pip install -e .
 
-# El mismo entrypoint que la ejecución local: run.sh lee el entorno (inyectado por
-# docker-compose con --env-file), elige el python del venv y arma los flags del CLI.
-CMD ["bash", "run.sh"]
+# El mismo entrypoint que la ejecución local: run.py lee el entorno (inyectado por
+# docker-compose con --env-file) y arma los flags del CLI. En el contenedor `python`
+# ya es el del venv (PATH), así que no re-ejecuta.
+CMD ["python", "run.py"]
 
 # Limpieza final de variables de proxy
 ENV http_proxy="" https_proxy="" no_proxy=""
