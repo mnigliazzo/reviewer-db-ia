@@ -112,6 +112,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
     parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos con backoff por llamada al LLM (solo providers cloud; ollama no tiene retry nativo)")
     parser.add_argument("--num-ctx",            type=int, default=32768, help="Tamaño de contexto de ollama (num_ctx); ignorado para providers cloud")
+    parser.add_argument("--max-concurrency",    type=int, default=1, help="Llamadas LLM en paralelo (se multiplica por el fan-out; 1 = todo en serie)")
     parser.add_argument("--fail-on",            type=str, default="CRÍTICO",
                         help="Prioridades que hacen fallar el pipeline (CSV). Default: CRÍTICO")
     parser.add_argument("--sarif",              type=str, help="Escribe el reporte SARIF 2.1.0 en esta ruta")
@@ -127,6 +128,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--llm-retries no puede ser negativo")
     if args.num_ctx <= 0:
         parser.error("--num-ctx tiene que ser > 0")
+    if args.max_concurrency < 1:
+        parser.error("--max-concurrency tiene que ser >= 1")
 
     raw = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
     valid = {p.value for p in Prioridad}
@@ -176,10 +179,10 @@ def main(argv: list[str] | None = None) -> int:
 
     states = build_migration_states(build_migrations_queue(scripts), args.max_schema_scripts)
     # OJO: max_concurrency se MULTIPLICA por el fan-out anidado -> N migraciones en
-    # paralelo x N review_script cada una. Con 1 = todo en serie (lo que le sirve a
-    # un ollama de una instancia; el paralelismo ahí solo encola requests).
-    # Subir solo si el backend sirve en paralelo de verdad (OLLAMA_NUM_PARALLEL, cloud).
-    results = migration_graph.batch(states, config={"max_concurrency": 1})
+    # paralelo x N review_script cada una. 1 (default) = todo en serie, que es lo que
+    # le sirve a un ollama de una instancia. Subir solo si el backend paraleliza de
+    # verdad (OLLAMA_NUM_PARALLEL, cloud).
+    results = migration_graph.batch(states, config={"max_concurrency": args.max_concurrency})
 
     all_reviews = [review for res in results for review in res["reviews"]]
     reports = [res["report"] for res in results if res["report"] is not None]

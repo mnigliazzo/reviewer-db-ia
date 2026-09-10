@@ -14,9 +14,10 @@ Spanish — keep new user-facing strings in Spanish.
 
 `run.py` is the single cross-platform direct-run entrypoint (replaced the old
 `run.sh` / `run.ps1` pair). It reads a whitelisted subset of keys (`PROVIDER`,
-`MODEL_BASE_URL`, `MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`,
-`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`,
-`REVIEWER_SARIF`, `API_KEY`, `SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
+`MODEL_BASE_URL`, `MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_TEMPERATURE`,
+`REVIEWER_MAX_CONCURRENCY`, `REVIEWER_MAX_*`, `REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`,
+`REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`, `REVIEWER_SARIF`, `API_KEY`,
+`SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
 `.env`); a non-empty real env var wins over both. It re-execs itself with the repo
 `.venv` python if needed and never writes to the environment. `.env.example` values
 must not carry inline `# comments` — the parser doesn't strip them.
@@ -30,18 +31,22 @@ python run.py             # any platform
 # Direct invocation (what the scripts build up)
 python -m src.main --scripts-path <ROOT> --base-url <URL> --model-agent <MODEL> \
     [--provider ollama|openai|openrouter|groq] [--api-key KEY] [--skip-reporter] \
-    [--max-schema-scripts N] [--log-level INFO] \
+    [--max-schema-scripts N] [--max-concurrency 1] [--log-level INFO] \
     [--temperature 0.0] [--llm-timeout 120] [--llm-retries 2] [--num-ctx 32768] \
     [--fail-on CRÍTICO[,ALTO,...]] [--sarif PATH]
 ```
 
 `--scripts-path`, `--base-url`, `--model-agent` are required. `--max-schema-scripts 0`
 means *unlimited* (not "disabled"). `--num-ctx` is ollama's context size (ignored for
-cloud providers). `--fail-on` (default
+cloud providers). `--max-concurrency` is passed to `migration_graph.batch()` and
+**multiplies** through the nested fan-out (N migrations × N `review_script`); `1` = fully
+sequential. `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
-machine-readable output). `run.py` exposes these as `REVIEWER_FAIL_ON`,
-`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`, `REVIEWER_SARIF`.
+machine-readable output). `run.py` exposes every knob as an env var (`REVIEWER_FAIL_ON`,
+`REVIEWER_TEMPERATURE`, `REVIEWER_MAX_CONCURRENCY`, `REVIEWER_LLM_TIMEOUT`,
+`REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`, `REVIEWER_SARIF`, …) — one CLI flag ↔
+one `.env` key, always passed with a default.
 
 ```bash
 # Full pipeline
@@ -112,7 +117,7 @@ name; forward and rollback files are read into memory up front and passed as
 skipped with a warning). Each state carries its own `schema_context` = the forward
 scripts of the *earlier* migrations (`build_schema_context`, capped by
 `--max-schema-scripts`), which is known upfront. `main` runs them with
-`migration_graph.batch(states, config={"max_concurrency": 4})` — the framework's Runnable
+`migration_graph.batch(states, config={"max_concurrency": args.max_concurrency})` — the framework's Runnable
 batch, no orchestration loop of our own. Then `ReporterAgent` runs once (unless
 `--skip-reporter`). `main` derives `all_reviews` / `reports` / `incoherent` from the
 result list for `decide_exit` / SARIF.

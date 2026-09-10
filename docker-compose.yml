@@ -30,6 +30,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       API_KEY: ${API_KEY:-}
       SKIP_REPORTER: ${SKIP_REPORTER:-}
+      REVIEWER_TEMPERATURE: ${REVIEWER_TEMPERATURE:-}
+      REVIEWER_MAX_CONCURRENCY: ${REVIEWER_MAX_CONCURRENCY:-}
       REVIEWER_MAX_SCHEMA_SCRIPTS: ${REVIEWER_MAX_SCHEMA_SCRIPTS:-0}
       # sin default acá: si no está seteado, el default (CRÍTICO) lo pone src/main.py
       REVIEWER_FAIL_ON: ${REVIEWER_FAIL_ON:-}
