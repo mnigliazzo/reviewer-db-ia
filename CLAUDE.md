@@ -241,7 +241,7 @@ prioridad, **or** any incomplete rollback, → exit 1. `decide_exit` is a pure f
 
 `build_model(provider, base_url, model, api_key, *, temperature=0.0, timeout=120.0,
 retries=2)` is a thin wrapper over **`init_chat_model`** (the recommended v1 way).
-`ollama` → `model_provider="ollama"` (`num_ctx=16384`, `client_kwargs={"timeout": …}`);
+`ollama` → `model_provider="ollama"` (`num_ctx=32768`, `client_kwargs={"timeout": …}`);
 `openai` / `openrouter` / `groq` → `model_provider="openai"` with `base_url` from
 `PROVIDER_DEFAULT_URLS` and a throwaway `api_key` if none given. `retries` →
 `max_retries` (the model's own backoff; `ChatOllama` ignores it — local endpoint, no

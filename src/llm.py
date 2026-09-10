@@ -31,7 +31,10 @@ def build_model(
     """
     kwargs: dict = {"temperature": temperature, "max_retries": retries}
     if provider == "ollama":
-        kwargs.update(model_provider="ollama", base_url=base_url, num_ctx=16384,
+        # 32k: la fase 2 (with_structured_output) recibe toda la conversación de la
+        # fase 1 (prompt + skills cargadas + review en prosa); con 16k el JSON se
+        # truncaba y fallaba la validación.
+        kwargs.update(model_provider="ollama", base_url=base_url, num_ctx=32768,
                       client_kwargs={"timeout": timeout})
     else:  # openai / openrouter / groq -> misma ruta ChatOpenAI
         kwargs.update(
