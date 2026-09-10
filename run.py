@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent
 # el CLI consume SCRIPTS_PATH.
 _ALLOWED = frozenset({
     "PROVIDER", "MODEL_BASE_URL", "MODEL_AGENT", "API_KEY", "LOG_LEVEL", "SCRIPTS_PATH",
-    "SKIP_REPORTER", "REVIEWER_MAX_SCHEMA_SCRIPTS", "REVIEWER_FAIL_ON",
-    "REVIEWER_LLM_TIMEOUT", "REVIEWER_LLM_RETRIES", "REVIEWER_NUM_CTX", "REVIEWER_SARIF",
+    "SKIP_REPORTER", "OLLAMA_CONTEXT_LENGTH", "REVIEWER_MAX_SCHEMA_SCRIPTS",
+    "REVIEWER_FAIL_ON", "REVIEWER_LLM_TIMEOUT", "REVIEWER_LLM_RETRIES", "REVIEWER_SARIF",
 })
 
 
@@ -75,7 +75,7 @@ def _build_argv(cfg: dict[str, str]) -> list[str]:
         "--max-schema-scripts", get("REVIEWER_MAX_SCHEMA_SCRIPTS", "0"),
         "--llm-timeout", get("REVIEWER_LLM_TIMEOUT", "120"),
         "--llm-retries", get("REVIEWER_LLM_RETRIES", "2"),
-        "--num-ctx", get("REVIEWER_NUM_CTX", "32768"),
+        "--num-ctx", get("OLLAMA_CONTEXT_LENGTH", "32768"),
     ]
     if get("REVIEWER_FAIL_ON"):
         argv += ["--fail-on", get("REVIEWER_FAIL_ON")]

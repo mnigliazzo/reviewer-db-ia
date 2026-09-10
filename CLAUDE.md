@@ -15,7 +15,7 @@ Spanish — keep new user-facing strings in Spanish.
 `run.py` is the single cross-platform direct-run entrypoint (replaced the old
 `run.sh` / `run.ps1` pair). It reads a whitelisted subset of keys (`PROVIDER`,
 `MODEL_BASE_URL`, `MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`,
-`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_NUM_CTX`,
+`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`,
 `REVIEWER_SARIF`, `API_KEY`, `SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
 `.env`); a non-empty real env var wins over both. It re-execs itself with the repo
 `.venv` python if needed and never writes to the environment. `.env.example` values
@@ -41,7 +41,7 @@ cloud providers). `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
 machine-readable output). `run.py` exposes these as `REVIEWER_FAIL_ON`,
-`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_NUM_CTX`, `REVIEWER_SARIF`.
+`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `OLLAMA_CONTEXT_LENGTH`, `REVIEWER_SARIF`.
 
 ```bash
 # Full pipeline
@@ -135,7 +135,7 @@ parsing.
 
 `review_script` and `coherence` carry a langgraph `RetryPolicy` (`_LLM_RETRY`,
 `max_attempts=3`, `retry_on` = `RuntimeError` / `ValueError` / `ConnectionError` /
-`TimeoutError`): if phase 2 still returns nothing or a bad schema,
+`TimeoutError` / `httpx.TransportError`): if phase 2 still returns nothing or a bad schema,
 `ReviewResult.from_output` / `analyze` raise, and the node is retried. **After** the
 retries are exhausted there is no further safety net: the
 exception propagates out of the node and aborts the whole run with a non-zero exit — no
