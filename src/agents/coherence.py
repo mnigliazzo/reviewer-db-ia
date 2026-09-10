@@ -40,4 +40,7 @@ class CoherenceAgent:
             f"=== SCRIPTS DE ROLLBACK ===\n\n{rollback_block}"
         )
         result = self._agent.invoke({"messages": [HumanMessage(content=prompt)]})
-        return result["structured_response"]
+        output = result["structured_response"]
+        if output is None:
+            raise RuntimeError("coherence: el modelo respondió sin devolver salida estructurada")
+        return output

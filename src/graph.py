@@ -5,13 +5,21 @@ import operator
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.types import RetryPolicy, Send
 
 from .agents import CoherenceAgent, MiniReporterAgent, ReviewerAgent
 from .logging_utils import banner
 from .models import CoherenceOutput, MigrationReport, ScriptReview
 
 logger = logging.getLogger(__name__)
+
+# El modelo a veces termina el turno sin emitir la salida estructurada
+# (structured_response=None -> RuntimeError) o la emite mal (ValidationError).
+# Es no-determinista: reintentar el nodo suele resolverlo. Errores de red también.
+_LLM_RETRY = RetryPolicy(
+    max_attempts=3,
+    retry_on=(RuntimeError, ValueError, ConnectionError, TimeoutError),
+)
 
 
 class MigrationState(TypedDict):
@@ -88,8 +96,8 @@ def build_migration_graph(
         return {"report": report}
 
     graph = StateGraph(MigrationState)
-    graph.add_node("review_script", review_script_node)
-    graph.add_node("coherence", coherence_node)
+    graph.add_node("review_script", review_script_node, retry_policy=_LLM_RETRY)
+    graph.add_node("coherence", coherence_node, retry_policy=_LLM_RETRY)
     graph.add_node("mini_reporter", mini_reporter_node)
 
     graph.add_conditional_edges(START, fan_out, ["review_script"])
