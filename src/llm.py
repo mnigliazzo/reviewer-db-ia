@@ -22,19 +22,20 @@ def build_model(
     temperature: float = 0.0,
     timeout: float = 120.0,
     retries: int = 2,
+    num_ctx: int = 32768,
 ) -> BaseChatModel:
     """Chat model vía ``init_chat_model`` (forma recomendada en LangChain v1).
 
     El retry con backoff lo hace el propio modelo (``max_retries``), sin envolver
     nada por fuera. ``ChatOllama`` no tiene retry nativo — para ollama local, que
     apunta a un endpoint en la misma máquina, no hace falta.
+
+    ``num_ctx`` (solo ollama): la fase 2 (``with_structured_output``) recibe toda la
+    conversación de la fase 1, así que conviene holgado. Cuesta RAM/VRAM en el server.
     """
     kwargs: dict = {"temperature": temperature, "max_retries": retries}
     if provider == "ollama":
-        # 32k: la fase 2 (with_structured_output) recibe toda la conversación de la
-        # fase 1 (prompt + skills cargadas + review en prosa); con 16k el JSON se
-        # truncaba y fallaba la validación.
-        kwargs.update(model_provider="ollama", base_url=base_url, num_ctx=32768,
+        kwargs.update(model_provider="ollama", base_url=base_url, num_ctx=num_ctx,
                       client_kwargs={"timeout": timeout})
     else:  # openai / openrouter / groq -> misma ruta ChatOpenAI
         kwargs.update(

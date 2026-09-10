@@ -15,8 +15,8 @@ Spanish — keep new user-facing strings in Spanish.
 `run.py` is the single cross-platform direct-run entrypoint (replaced the old
 `run.sh` / `run.ps1` pair). It reads a whitelisted subset of keys (`PROVIDER`,
 `MODEL_BASE_URL`, `MODEL_AGENT`, `SCRIPTS_PATH`, `LOG_LEVEL`, `REVIEWER_MAX_*`,
-`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`,
-`API_KEY`, `SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
+`REVIEWER_FAIL_ON`, `REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_NUM_CTX`,
+`REVIEWER_SARIF`, `API_KEY`, `SKIP_REPORTER`) from `.env` / `.env.local` (`.env.local` overriding
 `.env`); a non-empty real env var wins over both. It re-execs itself with the repo
 `.venv` python if needed and never writes to the environment. `.env.example` values
 must not carry inline `# comments` — the parser doesn't strip them.
@@ -31,16 +31,17 @@ python run.py             # any platform
 python -m src.main --scripts-path <ROOT> --base-url <URL> --model-agent <MODEL> \
     [--provider ollama|openai|openrouter|groq] [--api-key KEY] [--skip-reporter] \
     [--max-schema-scripts N] [--log-level INFO] \
-    [--temperature 0.0] [--llm-timeout 120] [--llm-retries 2] \
+    [--temperature 0.0] [--llm-timeout 120] [--llm-retries 2] [--num-ctx 32768] \
     [--fail-on CRÍTICO[,ALTO,...]] [--sarif PATH]
 ```
 
 `--scripts-path`, `--base-url`, `--model-agent` are required. `--max-schema-scripts 0`
-means *unlimited* (not "disabled"). `--fail-on` (default
+means *unlimited* (not "disabled"). `--num-ctx` is ollama's context size (ignored for
+cloud providers). `--fail-on` (default
 `CRÍTICO`) is the CSV of prioridades that make the run exit non-zero; an incomplete
 rollback always fails regardless. `--sarif PATH` writes a SARIF 2.1.0 report (the only
 machine-readable output). `run.py` exposes these as `REVIEWER_FAIL_ON`,
-`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_SARIF`.
+`REVIEWER_LLM_TIMEOUT`, `REVIEWER_LLM_RETRIES`, `REVIEWER_NUM_CTX`, `REVIEWER_SARIF`.
 
 ```bash
 # Full pipeline
@@ -241,7 +242,8 @@ prioridad, **or** any incomplete rollback, → exit 1. `decide_exit` is a pure f
 
 `build_model(provider, base_url, model, api_key, *, temperature=0.0, timeout=120.0,
 retries=2)` is a thin wrapper over **`init_chat_model`** (the recommended v1 way).
-`ollama` → `model_provider="ollama"` (`num_ctx=32768`, `client_kwargs={"timeout": …}`);
+`ollama` → `model_provider="ollama"` (`num_ctx` from `--num-ctx`, default 32768;
+`client_kwargs={"timeout": …}`);
 `openai` / `openrouter` / `groq` → `model_provider="openai"` with `base_url` from
 `PROVIDER_DEFAULT_URLS` and a throwaway `api_key` if none given. `retries` →
 `max_retries` (the model's own backoff; `ChatOllama` ignores it — local endpoint, no

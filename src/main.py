@@ -111,6 +111,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature",        type=float, default=0.0, help="Temperature del modelo (default 0 = determinista)")
     parser.add_argument("--llm-timeout",        type=float, default=120.0, help="Timeout por llamada al LLM, en segundos")
     parser.add_argument("--llm-retries",        type=int, default=2, help="Reintentos con backoff por llamada al LLM (solo providers cloud; ollama no tiene retry nativo)")
+    parser.add_argument("--num-ctx",            type=int, default=32768, help="Tamaño de contexto de ollama (num_ctx); ignorado para providers cloud")
     parser.add_argument("--fail-on",            type=str, default="CRÍTICO",
                         help="Prioridades que hacen fallar el pipeline (CSV). Default: CRÍTICO")
     parser.add_argument("--sarif",              type=str, help="Escribe el reporte SARIF 2.1.0 en esta ruta")
@@ -124,6 +125,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--max-schema-scripts no puede ser negativo (0 = ilimitado)")
     if args.llm_retries < 0:
         parser.error("--llm-retries no puede ser negativo")
+    if args.num_ctx <= 0:
+        parser.error("--num-ctx tiene que ser > 0")
 
     raw = {p.strip().upper() for p in args.fail_on.split(",") if p.strip()}
     valid = {p.value for p in Prioridad}
@@ -163,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     model = build_model(
         args.provider, args.base_url, args.model_agent, args.api_key,
         temperature=args.temperature, timeout=args.llm_timeout, retries=args.llm_retries,
+        num_ctx=args.num_ctx,
     )
     migration_graph = build_migration_graph(
         ReviewerAgent(model, SKILLS_BASE_PATH),
