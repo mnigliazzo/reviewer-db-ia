@@ -121,17 +121,22 @@ result list for `decide_exit` / SARIF.
 → `coherence` → `mini_reporter` → `END`. `coherence` runs once after the implicit fan-in
 (no `gather`/join node). Parallel-worker state merges with `operator.add` reducers.
 `review_script` calls `reviewer.review(...)`, `coherence` calls
-`coherence_agent.analyze(...)`, `mini_reporter` calls `mini_reporter_agent.generate(...)`;
-the first two are a single LangChain **`create_agent`** run that loads skills via the
-`load_skill` tool and returns the structured schema (`ReviewOutput` / `CoherenceOutput`)
-as `result["structured_response"]`. No hand-rolled tool loop, no text parsing.
+`coherence_agent.analyze(...)`, `mini_reporter` calls `mini_reporter_agent.generate(...)`.
+`ReviewerAgent` / `CoherenceAgent` are **two phases** (`agents/base.build_skill_agent`
+returns `(agent, structured, system_message)`): **(1)** a `create_agent` ReAct loop with
+the `load_skill` tool lets the model pull the guides it needs; **(2)**
+`model.with_structured_output(schema)` is invoked on the resulting messages to force the
+`ReviewOutput` / `CoherenceOutput` back (ollama `format=` — the model has no choice).
+`create_agent`'s own `response_format` is *not* used: with ChatOllama it ends the loop
+the moment the model answers without a tool call, leaving `structured_response=None`
+every time (seen with `gemma4:e4b` and `qwen2.5:14b`). No hand-rolled tool loop, no text
+parsing.
 
 `review_script` and `coherence` carry a langgraph `RetryPolicy` (`_LLM_RETRY`,
 `max_attempts=3`, `retry_on` = `RuntimeError` / `ValueError` / `ConnectionError` /
-`TimeoutError`): `create_agent` non-deterministically ends a turn with no structured
-output (`structured_response=None`), which `ReviewResult.from_output` / `analyze` turn
-into an explicit `RuntimeError` — retrying the node re-rolls `create_agent` and usually
-succeeds. **After** the retries are exhausted there is no further safety net: the
+`TimeoutError`): if phase 2 still returns nothing or a bad schema,
+`ReviewResult.from_output` / `analyze` raise, and the node is retried. **After** the
+retries are exhausted there is no further safety net: the
 exception propagates out of the node and aborts the whole run with a non-zero exit — no
 synthetic `_REVIEW_FALLO` finding, no fail-safe not-approved. A genuine `INCOMPLETO`
 veredicto still flows through normally (→ `incoherent` → exit 1 with a clean message).
@@ -141,13 +146,13 @@ gate the merge.
 
 ### Agents (`src/agents/`)
 
-- **`ReviewerAgent`** — reviews one script. `review(script, sql, schema_context)` runs a
-  `create_agent` (tool: `load_skill`, `response_format=ReviewOutput`) and returns a
-  `ReviewResult` (`ReviewOutput` + `skill_calls(messages)`). System prompt =
-  `reviewer_system.md` + a generated skills header.
+- **`ReviewerAgent`** — reviews one script. `review(script, sql, schema_context)` runs
+  the two-phase flow above and returns a `ReviewResult` (`ReviewOutput` +
+  `skill_calls(messages)`). System prompt = `reviewer_system.md` + a generated skills
+  header (also prepended to the phase-2 structured call).
 - **`CoherenceAgent`** — runs once per migration; checks the rollback reverts the
-  forward. `analyze(migration, forward, rollback)` — same `create_agent` shape with
-  `response_format=CoherenceOutput`. The
+  forward. `analyze(migration, forward, rollback)` — same two-phase shape,
+  `with_structured_output(CoherenceOutput)`. The
   rollback-completeness criteria live in the `rollback-coherence` skill, not the prompt.
   `CoherenceOutput.veredicto` is the strict `Veredicto` `StrEnum` (no Python
   normalization; an off-enum value is a `ValidationError` that propagates out of
@@ -162,10 +167,10 @@ gate the merge.
   Skipped entirely with `--skip-reporter`.
 
 All four agents take the bare model from `build_model` (`init_chat_model`); retry is the
-model's own `max_retries` (cloud providers only — `ChatOllama` has none), nothing is
-wrapped. `ReviewerAgent` / `CoherenceAgent` also get `SKILLS_BASE_PATH`;
-`agents/base.build_skill_agent` composes the system prompt and calls `create_agent` with
-**no middleware** (the `load_skill` loop is bounded by langgraph's `recursion_limit`).
+model's own `max_retries` (cloud providers only — `ChatOllama` has none) plus the graph
+`RetryPolicy`, nothing is wrapped. `ReviewerAgent` / `CoherenceAgent` also get
+`SKILLS_BASE_PATH`; `agents/base.build_skill_agent`'s `create_agent` has **no middleware**
+(the `load_skill` loop is bounded by langgraph's `recursion_limit`).
 `load_prompt` (the only other helper in `agents/base.py`) loads a stripped plain-text
 prompt from `src/prompts/`. `MiniReporter` / `Reporter` read the reply with
 `response.text` (langchain-core native).
@@ -187,8 +192,10 @@ relevant ones (`sql-code-review` / `sql-optimization` for the reviewer,
 
 No text parsing, **and no tolerant normalization** — the schemas are strict; a mismatch
 is a pydantic `ValidationError` that propagates out of the node and aborts the run (no
-`_REVIEW_FALLO`, no fail-safe not-approved). `ReviewOutput` is the `create_agent`
-`response_format`. `ReviewResult = ReviewOutput + skills_utilizadas`
+`_REVIEW_FALLO`, no fail-safe not-approved). `ReviewOutput` is the
+`with_structured_output` schema for the reviewer; `from_output` runs `model_validate`
+first so it takes the model instance *or* the dict some providers return.
+`ReviewResult = ReviewOutput + skills_utilizadas`
 (added by the worker, not the LLM); build it with `ReviewResult.from_output(output,
 skills)` (no filtering — an empty finding can't exist, the fields are required).
 `Finding.prioridad` is the `Prioridad` `StrEnum` (`CRÍTICO ALTO MEDIO BAJO MEJORA
@@ -204,7 +211,7 @@ raise. `Finding.linea: int | None` feeds the SARIF region. `ReviewResult.render(
 computes the metrics from structured `ScriptReview`s; `MigrationReport.render()` is the
 one place the report's text layout lives.
 
-`CoherenceOutput` (same module) is the `create_agent` `response_format` for
+`CoherenceOutput` (same module) is the `with_structured_output` schema for
 `CoherenceAgent`: `resumen_forward` / `resumen_rollback` / `analisis_coherencia` prose
 (optional, `default=""`) + `veredicto` (the `Veredicto` `StrEnum` `COHERENTE` /
 `INCOMPLETO`, default `INCOMPLETO`, `.approved` helper) + `operaciones_sin_revertir`.

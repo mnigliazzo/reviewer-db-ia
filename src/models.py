@@ -84,9 +84,11 @@ class ReviewResult(ReviewOutput):
     skills_utilizadas: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_output(cls, output: ReviewOutput | None, skills_utilizadas: list[str]) -> ReviewResult:
+    def from_output(cls, output: ReviewOutput | dict | None, skills_utilizadas: list[str]) -> ReviewResult:
         if output is None:
-            raise RuntimeError("el reviewer no devolvió salida estructurada (el modelo respondió sin llamar a la tool)")
+            raise RuntimeError("el reviewer no devolvió salida estructurada")
+        # ``with_structured_output`` devuelve el modelo o un dict según el provider.
+        output = ReviewOutput.model_validate(output)
         return cls(**output.model_dump(), skills_utilizadas=skills_utilizadas)
 
     def render(self) -> str:
