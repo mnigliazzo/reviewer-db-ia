@@ -171,10 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     states = build_migration_states(build_migrations_queue(scripts), args.max_schema_scripts)
-    # Tope global de llamadas LLM concurrentes (migraciones + review_script). Solo
-    # ayuda si el backend sirve en paralelo (ej: OLLAMA_NUM_PARALLEL); contra una
-    # instancia de a una request, es lo mismo que 1.
-    results = migration_graph.batch(states, config={"max_concurrency": 4})
+    # OJO: max_concurrency se MULTIPLICA por el fan-out anidado -> N migraciones en
+    # paralelo x N review_script cada una. Con 1 = todo en serie (lo que le sirve a
+    # un ollama de una instancia; el paralelismo ahí solo encola requests).
+    # Subir solo si el backend sirve en paralelo de verdad (OLLAMA_NUM_PARALLEL, cloud).
+    results = migration_graph.batch(states, config={"max_concurrency": 1})
 
     all_reviews = [review for res in results for review in res["reviews"]]
     reports = [res["report"] for res in results if res["report"] is not None]
