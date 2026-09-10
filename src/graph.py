@@ -4,6 +4,7 @@ import logging
 import operator
 from typing import Annotated, TypedDict
 
+import httpx
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy, Send
 
@@ -13,12 +14,13 @@ from .models import CoherenceOutput, MigrationReport, ScriptReview
 
 logger = logging.getLogger(__name__)
 
-# El modelo a veces termina el turno sin emitir la salida estructurada
-# (structured_response=None -> RuntimeError) o la emite mal (ValidationError).
-# Es no-determinista: reintentar el nodo suele resolverlo. Errores de red también.
+# Reintentar el nodo ante:
+#  - RuntimeError  -> el modelo no devolvió salida estructurada
+#  - ValueError    -> ValidationError (salida mal formada)
+#  - httpx.TransportError / ConnectionError / TimeoutError -> ollama lento o caído
 _LLM_RETRY = RetryPolicy(
     max_attempts=3,
-    retry_on=(RuntimeError, ValueError, ConnectionError, TimeoutError),
+    retry_on=(RuntimeError, ValueError, ConnectionError, TimeoutError, httpx.TransportError),
 )
 
 
